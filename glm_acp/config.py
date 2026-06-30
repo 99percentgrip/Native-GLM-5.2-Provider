@@ -97,21 +97,36 @@ COMPACTION_USER_PREFIX = (
     "following the structure in your instructions:\n\n---\n\n"
 )
 
-MODELS: dict[str, dict[str, str]] = {
+MODELS: dict[str, dict[str, Any]] = {
     "glm-5.2": {
         "name": "GLM-5.2 (Flagship)",
         "description": "Latest flagship — maximum reasoning, coding, and long-horizon agentic tasks",
         "context_window": "1M",
+        "plans": ["coding", "standard", "bigmodel"],
     },
     "glm-5-turbo": {
         "name": "GLM-5-Turbo",
         "description": "Flagship model optimized for speed — complex tasks with lower latency",
         "context_window": "1M",
+        "plans": ["coding", "standard", "bigmodel"],
     },
     "glm-4.7": {
         "name": "GLM-4.7",
         "description": "Balanced model for daily development and routine tasks",
         "context_window": "1M",
+        "plans": ["coding", "standard", "bigmodel"],
+    },
+    "glm-4.5v": {
+        "name": "GLM-4.5V (Vision)",
+        "description": "Vision-capable — analyze screenshots, diagrams, charts",
+        "context_window": "128K",
+        "plans": ["standard", "bigmodel"],
+    },
+    "glm-4.6v": {
+        "name": "GLM-4.6V (Vision)",
+        "description": "Vision model — newer vision model with improved OCR and image understanding",
+        "context_window": "128K",
+        "plans": ["standard", "bigmodel"],
     },
 }
 
@@ -155,6 +170,15 @@ def thought_levels_for_model(model: str) -> dict[str, dict[str, Any]]:
         k: v
         for k, v in THOUGHT_LEVELS.items()
         if v["models"] is None or model in v["models"]
+    }
+
+
+def models_for_plan(plan: str) -> dict[str, dict[str, Any]]:
+    """Return the subset of models available on the given API plan."""
+    return {
+        model_id: info
+        for model_id, info in MODELS.items()
+        if plan in info.get("plans", [])
     }
 
 

@@ -53,6 +53,7 @@ from .config import (
     DESTRUCTIVE_TOOLS,
     MODELS,
     THOUGHT_LEVELS,
+    models_for_plan,
     thought_levels_for_model,
 )
 from .glm_client import GlmClient
@@ -383,6 +384,13 @@ class GlmAcpAgent(acp.Agent):
             session.thought_level = str(value)
         elif config_id == "api_endpoint":
             session.api_endpoint = str(value)
+            # If the current model isn't available on the new plan,
+            # fall back to the default model.
+            if session.model not in models_for_plan(session.api_endpoint):
+                session.model = DEFAULT_MODEL
+                session.context_size = CONTEXT_WINDOW_TOKENS.get(session.model, 1_000_000)
+                if session.thought_level not in thought_levels_for_model(session.model):
+                    session.thought_level = "enabled" if "enabled" in thought_levels_for_model(session.model) else "disabled"
         elif config_id == "permission_mode":
             session.permission_mode = str(value)
 
@@ -981,6 +989,9 @@ class GlmAcpAgent(acp.Agent):
         }.get(name, name)
 
     def _build_model_option(self, session: Session) -> SessionConfigOptionSelect:
+        plan_models = models_for_plan(session.api_endpoint)
+        # If the current model isn't in this plan, still show it as selected
+        # (the set_config_option handler will re-validate on switch)
         return SessionConfigOptionSelect(
             id="model",
             name="Model",
@@ -994,7 +1005,7 @@ class GlmAcpAgent(acp.Agent):
                     name=info["name"],
                     description=f'{info["description"]} ({info["context_window"]} context)',
                 )
-                for model_id, info in MODELS.items()
+                for model_id, info in plan_models.items()
             ],
         )
 
