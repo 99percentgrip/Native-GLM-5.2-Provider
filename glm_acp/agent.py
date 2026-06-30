@@ -17,16 +17,25 @@ import acp
 from acp.interfaces import Client
 from acp.schema import (
     AgentCapabilities,
+    CloseSessionResponse,
     Implementation,
     InitializeResponse,
+    ListSessionsResponse,
     LoadSessionResponse,
     NewSessionResponse,
     PromptCapabilities,
     PromptResponse,
+    ResumeSessionResponse,
+    SessionCapabilities,
+    SessionCloseCapabilities,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
+    SessionInfo,
+    SessionInfoUpdate,
+    SessionListCapabilities,
     SessionMode,
     SessionModeState,
+    SessionResumeCapabilities,
     SetSessionConfigOptionResponse,
     UsageUpdate,
 )
@@ -41,6 +50,7 @@ from .config import (
     THOUGHT_LEVELS,
 )
 from .glm_client import GlmClient
+from .session_store import SessionStore
 from .tools import TOOL_DEFINITIONS, TOOL_KINDS, Sandbox, ToolError, execute_tool
 
 logger = logging.getLogger("glm_acp")
@@ -83,6 +93,7 @@ class Session:
         self.model = DEFAULT_MODEL
         self.thought_level = "enabled"
         self.mode = "code"
+        self.title: str | None = None
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
@@ -91,6 +102,42 @@ class Session:
         self.estimated_tokens: int = 0
         self.last_reported_tokens: int = -1
 
+    # ------------------------------------------------------------------
+    # Serialization for persistence across process restarts
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the conversation state for on-disk storage."""
+        return {
+            "version": 1,
+            "cwd": self.cwd,
+            "model": self.model,
+            "thought_level": self.thought_level,
+            "mode": self.mode,
+            "title": self.title,
+            "messages": self.messages,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], session_id: str) -> "Session":
+        """Rebuild a Session from persisted data.
+
+        The cwd is taken from *data* so the sandbox matches the original
+        workspace even if the stored path differs from what the client
+        passes in load_session.
+        """
+        cwd = data.get("cwd", ".")
+        session = cls(session_id, cwd)
+        session.model = data.get("model", DEFAULT_MODEL)
+        session.thought_level = data.get("thought_level", "enabled")
+        session.mode = data.get("mode", "code")
+        session.title = data.get("title")
+        messages = data.get("messages")
+        if messages:
+            session.messages = messages
+        session.context_size = CONTEXT_WINDOW_TOKENS.get(session.model, 1_000_000)
+        return session
+
 
 class GlmAcpAgent(acp.Agent):
     _conn: Client
@@ -98,6 +145,7 @@ class GlmAcpAgent(acp.Agent):
 
     def __init__(self) -> None:
         self._sessions = {}
+        self._store = SessionStore()
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -118,6 +166,11 @@ class GlmAcpAgent(acp.Agent):
                     audio=False,
                     embedded_context=True,
                 ),
+                session_capabilities=SessionCapabilities(
+                    list=SessionListCapabilities(),
+                    resume=SessionResumeCapabilities(),
+                    close=SessionCloseCapabilities(),
+                ),
             ),
             agent_info=Implementation(
                 name="glm-acp",
@@ -135,6 +188,7 @@ class GlmAcpAgent(acp.Agent):
     ) -> NewSessionResponse:
         session = Session(str(uuid4()), cwd, additional_directories)
         self._sessions[session.id] = session
+        self._store.save(session.id, session.to_dict())
 
         config_options = [
             self._build_model_option(session),
@@ -158,14 +212,25 @@ class GlmAcpAgent(acp.Agent):
         mcp_servers: Any = None,
         **kwargs: Any,
     ) -> LoadSessionResponse:
-        """Recreate a session so Zed can resume displaying a previous chat.
+        """Recreate a previously-created session so Zed can resume its chat.
 
-        The previous message history is not persisted across process
-        restarts (the agent runs as a stateless subprocess), so we start
-        fresh.  Returning a valid LoadSessionResponse tells Zed the session
-        was accepted — the user can continue the conversation from here.
+        The conversation state (message history, model, mode) is persisted
+        to disk after every turn, so a process restart no longer loses the
+        conversation.  If no saved state exists we fall back gracefully to
+        a fresh session.
         """
-        session = Session(session_id, cwd, additional_directories)
+        data = self._store.load(session_id)
+        if data:
+            session = Session.from_dict(data, session_id)
+            logger.info(
+                "Restored session %s with %d messages from disk",
+                session_id,
+                len(session.messages),
+            )
+        else:
+            session = Session(session_id, cwd, additional_directories)
+            logger.info("No saved state for session %s — starting fresh", session_id)
+
         self._sessions[session.id] = session
 
         config_options = [
@@ -181,6 +246,75 @@ class GlmAcpAgent(acp.Agent):
             config_options=config_options,
         )
 
+    async def list_sessions(
+        self,
+        cwd: str | None = None,
+        additional_directories: list[str] | None = None,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> ListSessionsResponse:
+        """Return persisted sessions so Zed can populate its history sidebar."""
+        all_sessions = self._store.list()
+        # Filter by cwd if the client asked for a specific workspace.
+        if cwd:
+            all_sessions = [s for s in all_sessions if s.get("cwd") == cwd]
+        sessions = [
+            SessionInfo(
+                session_id=s["session_id"],
+                cwd=s.get("cwd", ""),
+                title=s.get("title"),
+                updated_at=s.get("updated_at"),
+            )
+            for s in all_sessions
+        ]
+        return ListSessionsResponse(sessions=sessions)
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: Any = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        """Resume a session — same restore logic as load_session."""
+        data = self._store.load(session_id)
+        if data:
+            session = Session.from_dict(data, session_id)
+            logger.info(
+                "Resumed session %s with %d messages from disk",
+                session_id,
+                len(session.messages),
+            )
+        else:
+            session = Session(session_id, cwd, additional_directories)
+            logger.info("No saved state for session %s — starting fresh", session_id)
+
+        self._sessions[session.id] = session
+
+        config_options = [
+            self._build_model_option(session),
+            self._build_thought_option(session),
+        ]
+
+        return ResumeSessionResponse(
+            modes=SessionModeState(
+                current_mode_id=session.mode,
+                available_modes=MODE_LIST,
+            ),
+            config_options=config_options,
+        )
+
+    async def close_session(
+        self,
+        session_id: str,
+        **kwargs: Any,
+    ) -> CloseSessionResponse:
+        """Clean up a closed session and remove its persisted state."""
+        self._sessions.pop(session_id, None)
+        self._store.delete(session_id)
+        return CloseSessionResponse()
+
     async def set_config_option(
         self,
         config_id: str,
@@ -194,6 +328,8 @@ class GlmAcpAgent(acp.Agent):
             session.context_size = CONTEXT_WINDOW_TOKENS.get(session.model, 1_000_000)
         elif config_id == "thought_level":
             session.thought_level = str(value)
+
+        self._store.save(session.id, session.to_dict())
 
         return SetSessionConfigOptionResponse(
             config_options=[
@@ -210,6 +346,7 @@ class GlmAcpAgent(acp.Agent):
     ) -> Any:
         session = self._sessions[session_id]
         session.mode = mode_id
+        self._store.save(session.id, session.to_dict())
         from acp.schema import SetSessionModeResponse
         return SetSessionModeResponse()
 
@@ -224,6 +361,12 @@ class GlmAcpAgent(acp.Agent):
         user_text = self._extract_text(prompt)
         session.messages.append({"role": "user", "content": user_text})
 
+        # Derive a session title from the first user message if we don't
+        # have one yet, and tell Zed so it shows up in the history sidebar.
+        if not session.title:
+            session.title = user_text[:60].strip() or "New Chat"
+            await self._send_session_info(session)
+
         try:
             stop_reason = await self._run_turn(session)
             return PromptResponse(stop_reason=stop_reason, user_message_id=message_id)
@@ -233,6 +376,9 @@ class GlmAcpAgent(acp.Agent):
             logger.exception("Prompt turn failed")
             await self._send_message(session.id, f"\n\n**Error:** {e}")
             return PromptResponse(stop_reason="end_turn")
+        finally:
+            # Persist the updated conversation so it survives restarts.
+            self._store.save(session.id, session.to_dict())
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         pass
@@ -439,6 +585,14 @@ class GlmAcpAgent(acp.Agent):
         chunk = acp.update_agent_message_text(text)
         await self._conn.session_update(session_id=session_id, update=chunk)
 
+    async def _send_session_info(self, session: Session) -> None:
+        """Notify the client of the session title for its history sidebar."""
+        update = SessionInfoUpdate(
+            session_update="session_info_update",
+            title=session.title,
+        )
+        await self._conn.session_update(session_id=session.id, update=update)
+
     async def _start_tool(self, session_id: str, tool_call_id: str, name: str) -> None:
         kind = TOOL_KINDS.get(name, "other")
         chunk = acp.start_tool_call(
@@ -523,4 +677,7 @@ async def run() -> None:
         stream=sys.stderr,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
-    await acp.run_agent(GlmAcpAgent())
+    # use_unstable_protocol=True enables session/resume, session/fork,
+    # session/close, and session/list which Zed relies on to restore
+    # conversations after a restart.
+    await acp.run_agent(GlmAcpAgent(), use_unstable_protocol=True)
