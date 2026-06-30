@@ -993,9 +993,13 @@ class GlmAcpAgent(acp.Agent):
             )
             try:
                 await self._maybe_compact(session, client, force=True)
+                return ""
+            except Exception as e:
+                logger.exception("/compact failed")
+                return f"❌ Compaction failed: {e}\nYour conversation is unchanged."
             finally:
                 await client.aclose()
-            return ""
+                self._store.save(session.id, session.to_dict())
 
         elif command == "/clear-plan":
             session.plan = []
