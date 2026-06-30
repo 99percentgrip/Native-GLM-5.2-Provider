@@ -71,6 +71,14 @@ Rules:
 - Use run_command for builds, tests, and git operations.
 - When writing or editing files, briefly explain what you're changing.
 - If a task spans many files, work through them systematically.
+
+Planning:
+- For any task with 3+ steps, call update_plan FIRST to lay out your plan.
+- Keep tasks concise (one action per entry). Break large work into sub-tasks.
+- Update the plan as you work: mark the current task 'in_progress', mark \
+finished ones 'completed'.
+- The plan helps the user track your progress — keep it accurate.
+- For simple questions or single-step tasks, skip the plan.
 """
 
 MODE_LIST = [
@@ -103,6 +111,8 @@ class Session:
         self.title: str | None = None
         # Permission mode: "ask" (approve destructive tools), "bypass" (auto-approve), "read" (read-only)
         self.permission_mode = "ask"
+        # Current task plan — list of PlanEntry-like dicts
+        self.plan: list[dict[str, str]] = []
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
@@ -126,6 +136,7 @@ class Session:
             "api_endpoint": self.api_endpoint,
             "title": self.title,
             "permission_mode": self.permission_mode,
+            "plan": self.plan,
             "messages": self.messages,
         }
 
@@ -143,6 +154,7 @@ class Session:
         session.thought_level = data.get("thought_level", "enabled")
         session.mode = data.get("mode", "code")
         session.api_endpoint = data.get("api_endpoint", DEFAULT_API_ENDPOINT)
+        session.plan = data.get("plan", [])
         session.title = data.get("title")
         session.permission_mode = data.get("permission_mode", "ask")
         messages = data.get("messages")
@@ -255,6 +267,10 @@ class GlmAcpAgent(acp.Agent):
         # agent_message_chunk), the same channel used during a live prompt.
         await self._replay_history(session)
 
+        # Replay the task plan if one exists
+        if session.plan:
+            await self._send_plan(session)
+
         config_options = [
             self._build_model_option(session),
             self._build_thought_option(session),
@@ -318,6 +334,10 @@ class GlmAcpAgent(acp.Agent):
 
         # Replay the conversation history so it shows up in the UI.
         await self._replay_history(session)
+
+        # Replay the task plan if one exists
+        if session.plan:
+            await self._send_plan(session)
 
         config_options = [
             self._build_model_option(session),
@@ -501,6 +521,16 @@ class GlmAcpAgent(acp.Agent):
                     tool_args = tc["function"]["arguments"]
                     tc_id = tc["id"]
 
+                    # --- Plan tool: handled in-agent, not via sandbox ---
+                    if tool_name == "update_plan":
+                        output = await self._handle_update_plan(session, tc_id, tool_args)
+                        session.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": output,
+                        })
+                        continue
+
                     await self._update_tool(session.id, tc_id, status="in_progress")
 
                     # --- Permission check ---
@@ -569,6 +599,59 @@ class GlmAcpAgent(acp.Agent):
                 used=used,
             )
             await self._conn.session_update(session_id=session.id, update=update)
+
+    # ------------------------------------------------------------------
+    # Task plan / todo list
+    # ------------------------------------------------------------------
+
+    async def _handle_update_plan(
+        self,
+        session: Session,
+        tool_call_id: str,
+        args: dict[str, Any],
+    ) -> str:
+        """Handle the update_plan tool call.
+
+        Converts the model's plan into an ACP ``plan`` session update so
+        Zed renders the checklist, stores it on the session for
+        persistence, and returns a confirmation string as the tool result.
+        """
+        tasks = args.get("tasks", [])
+        entries = []
+        for task in tasks:
+            entries.append({
+                "content": task.get("content", ""),
+                "priority": task.get("priority", "medium"),
+                "status": task.get("status", "pending"),
+            })
+
+        session.plan = entries
+        await self._send_plan(session)
+        self._store.save(session.id, session.to_dict())
+
+        # Return a compact summary as the tool result
+        n_pending = sum(1 for e in entries if e["status"] == "pending")
+        n_progress = sum(1 for e in entries if e["status"] == "in_progress")
+        n_done = sum(1 for e in entries if e["status"] == "completed")
+        return (
+            f"Plan updated: {len(entries)} tasks "
+            f"({n_done} completed, {n_progress} in progress, {n_pending} pending)."
+        )
+
+    async def _send_plan(self, session: Session) -> None:
+        """Send the current plan as an ACP plan session update."""
+        from acp.helpers import plan_entry
+
+        entries = [
+            plan_entry(
+                content=e["content"],
+                priority=e.get("priority", "medium"),
+                status=e.get("status", "pending"),
+            )
+            for e in session.plan
+        ]
+        update = acp.update_plan(entries)
+        await self._conn.session_update(session_id=session.id, update=update)
 
     # ------------------------------------------------------------------
     # Permission system

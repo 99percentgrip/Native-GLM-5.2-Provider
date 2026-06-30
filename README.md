@@ -17,6 +17,7 @@ features. This ACP agent does:
 - **Deep Thinking** — GLM-5.2 supports Deep · High and Deep · Max reasoning levels via `reasoning_effort` (config option, `thought_level` category)
 - **Permission modes** — Ask (approve edits/commands before they run), Read Only (block all writes), or Bypass (auto-approve everything) (config option, `permissions` category)
 - **API plan switcher** — switch between Coding Plan, Standard API, and BigModel endpoints from the chat dropdown (config option, `api_endpoint` category)
+- **Task plans** — the model creates a live todo list for multi-step tasks, visible as a checklist in the panel with pending/in-progress/completed states
 
 ## Install
 
@@ -155,6 +156,7 @@ The agent exposes these tools to the model:
 - `read_file`, `write_file`, `edit_file` — file operations (sandboxed)
 - `list_directory`, `search_files`, `grep` — code exploration
 - `run_command` — shell execution for builds, tests, git
+- `update_plan` — create/update a task plan (todo checklist) shown in the panel
 
 All file paths are validated against the session's working directory and
 additional workspace roots.

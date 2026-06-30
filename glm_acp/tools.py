@@ -122,6 +122,50 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_plan",
+            "description": (
+                "Update the task plan / todo list shown to the user. "
+                "Call this at the start of complex multi-step tasks to lay out your plan, "
+                "then update task statuses as you make progress. "
+                "Each call replaces the entire plan — always send the COMPLETE list of tasks. "
+                "Set the first task you're about to work on to 'in_progress', mark finished "
+                "ones 'completed', and upcoming ones 'pending'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "The complete list of tasks. Replaces the previous plan.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "Human-readable description of the task",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Current status of this task",
+                                },
+                                "priority": {
+                                    "type": "string",
+                                    "enum": ["high", "medium", "low"],
+                                    "description": "Importance level (default: medium)",
+                                },
+                            },
+                            "required": ["content", "status"],
+                        },
+                    },
+                },
+                "required": ["tasks"],
+            },
+        },
+    },
 ]
 
 TOOL_KINDS: dict[str, str] = {
@@ -132,6 +176,7 @@ TOOL_KINDS: dict[str, str] = {
     "search_files": "search",
     "grep": "search",
     "run_command": "execute",
+    "update_plan": "other",
 }
 
 
