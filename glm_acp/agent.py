@@ -219,6 +219,8 @@ class GlmAcpAgent(acp.Agent):
         self._sessions[session.id] = session
         self._store.save(session.id, session.to_dict())
 
+        await self._send_available_commands(session)
+
         config_options = [
             self._build_model_option(session),
             self._build_thought_option(session),
@@ -264,6 +266,10 @@ class GlmAcpAgent(acp.Agent):
 
         self._sessions[session.id] = session
 
+        # Recalculate token estimate from restored messages and report it
+        session.estimated_tokens = self._estimate_tokens(session.messages)
+        session.last_reported_tokens = -1
+
         # The ACP load_session / resume_session responses only carry config
         # options and modes — NOT the message history.  To make the previous
         # conversation visible in the editor UI we must *replay* it back via
@@ -274,6 +280,8 @@ class GlmAcpAgent(acp.Agent):
         # Replay the task plan if one exists
         if session.plan:
             await self._send_plan(session)
+
+        await self._send_available_commands(session)
 
         config_options = [
             self._build_model_option(session),
@@ -336,12 +344,18 @@ class GlmAcpAgent(acp.Agent):
 
         self._sessions[session.id] = session
 
+        # Recalculate token estimate from restored messages and report it
+        session.estimated_tokens = self._estimate_tokens(session.messages)
+        session.last_reported_tokens = -1
+
         # Replay the conversation history so it shows up in the UI.
         await self._replay_history(session)
 
         # Replay the task plan if one exists
         if session.plan:
             await self._send_plan(session)
+
+        await self._send_available_commands(session)
 
         config_options = [
             self._build_model_option(session),
@@ -431,6 +445,18 @@ class GlmAcpAgent(acp.Agent):
 
         # Extract images and text from the ACP prompt blocks.
         content, images = self._extract_prompt_parts(prompt)
+
+        # --- Slash commands ---
+        # Intercept messages starting with "/" and handle them directly
+        # without sending anything to the model.
+        stripped = content.strip()
+        if stripped.startswith("/") and not images:
+            # Show the user's command in the chat
+            await self._send_user_message(session.id, stripped)
+            response = await self._handle_command(session, stripped)
+            if response:
+                await self._send_message(session.id, f"\n\n{response}\n")
+            return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
 
         # Text-only models can't process images. Vision models can.
         is_vision_model = session.model in VISION_MODELS
@@ -588,13 +614,22 @@ class GlmAcpAgent(acp.Agent):
 
     @staticmethod
     def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
-        """Rough token estimate based on character count heuristic."""
+        """Rough token estimate based on character count heuristic.
+
+        Accounts for message content, tool call arguments, tool result
+        content, and per-message structural overhead (role tags, etc.).
+        """
         total_chars = 0
         for msg in messages:
             content = msg.get("content", "") or ""
             total_chars += len(content)
+            # Tool call arguments + names
             for tc in msg.get("tool_calls", []):
-                total_chars += len(json.dumps(tc.get("function", {}).get("arguments", "")))
+                fn = tc.get("function", {})
+                total_chars += len(fn.get("name", ""))
+                total_chars += len(fn.get("arguments", ""))
+            # Per-message overhead (role, delimiters, etc.) ~ 4 tokens
+            total_chars += CHARS_PER_TOKEN * 4
         return total_chars // CHARS_PER_TOKEN
 
     @staticmethod
@@ -740,23 +775,114 @@ class GlmAcpAgent(acp.Agent):
         await self._send_message(session.id, f"\n\n🚫 {msg}\n")
         return False, msg
 
+    async def _send_available_commands(self, session: Session) -> None:
+        """Advertise slash commands to the client so Zed shows them in the UI."""
+        from acp.helpers import update_available_commands
+        from acp.schema import AvailableCommand
+
+        commands = [
+            AvailableCommand(
+                name="compact",
+                description="Manually trigger context compaction — summarize older messages to free up context space",
+            ),
+            AvailableCommand(
+                name="clear-plan",
+                description="Clear the current task plan / todo list",
+            ),
+            AvailableCommand(
+                name="clear-history",
+                description="Clear all conversation history and start fresh (keeps current model/plan settings)",
+            ),
+            AvailableCommand(
+                name="status",
+                description="Show current model, plan, API endpoint, permission mode, and context usage",
+            ),
+        ]
+        update = update_available_commands(commands)
+        await self._conn.session_update(session_id=session.id, update=update)
+
+    async def _handle_command(self, session: Session, command: str) -> str:
+        """Handle a slash command typed by the user.
+
+        Returns the human-readable response to display.
+        """
+        command = command.strip()
+
+        if command == "/compact":
+            await self._send_message(
+                session.id,
+                "\n\n_Manually compacting conversation context…_\n\n",
+            )
+            thought_config = THOUGHT_LEVELS.get(session.thought_level, {})
+            base_url = API_ENDPOINTS.get(session.api_endpoint, {}).get(
+                "base_url", API_ENDPOINTS[DEFAULT_API_ENDPOINT]["base_url"]
+            )
+            client = GlmClient(
+                session.model,
+                thought_level=thought_config.get("thinking_type", "enabled"),
+                reasoning_effort=thought_config.get("reasoning_effort"),
+                base_url=base_url,
+            )
+            try:
+                await self._maybe_compact(session, client, force=True)
+            finally:
+                await client.aclose()
+            return ""
+
+        elif command == "/clear-plan":
+            session.plan = []
+            await self._send_plan(session)
+            self._store.save(session.id, session.to_dict())
+            return "📋 Task plan cleared."
+
+        elif command == "/clear-history":
+            system_msg = session.messages[0] if session.messages and session.messages[0].get("role") == "system" else None
+            session.messages = [system_msg] if system_msg else []
+            session.plan = []
+            session.estimated_tokens = 0
+            session.last_reported_tokens = -1
+            await self._send_plan(session)
+            await self._report_usage(session)
+            self._store.save(session.id, session.to_dict())
+            return "🧹 Conversation history cleared."
+
+        elif command == "/status":
+            n_msgs = len(session.messages)
+            return (
+                f"\n📊 **Session Status**\n"
+                f"- **Model:** {session.model}\n"
+                f"- **API Plan:** {API_ENDPOINTS.get(session.api_endpoint, {}).get('name', session.api_endpoint)}\n"
+                f"- **Reasoning:** {session.thought_level}\n"
+                f"- **Permissions:** {session.permission_mode}\n"
+                f"- **Context:** {session.estimated_tokens:,} / {session.context_size:,} tokens "
+                f"({session.estimated_tokens * 100 // max(session.context_size, 1)}%)\n"
+                f"- **Messages:** {n_msgs}\n"
+                f"- **Plan tasks:** {len(session.plan)}\n"
+            )
+
+        else:
+            return f"Unknown command: {command}\nAvailable commands: /compact, /clear-plan, /clear-history, /status"
+
     # ------------------------------------------------------------------
     # Context compaction
     # ------------------------------------------------------------------
 
-    async def _maybe_compact(self, session: Session, client: GlmClient) -> None:
+    async def _maybe_compact(self, session: Session, client: GlmClient, force: bool = False) -> None:
         """Trigger context compaction if estimated usage exceeds threshold.
 
         Mirrors Claude Code's approach: when the conversation approaches the
         context window limit, summarize older messages into a compact summary
         block while preserving the most recent N messages verbatim.
+
+        If *force* is True, compaction runs regardless of threshold (used by
+        the /compact slash command).
         """
         threshold_tokens = int(session.context_size * COMPACTION_THRESHOLD)
 
         # Always estimate first
         session.estimated_tokens = self._estimate_tokens(session.messages)
 
-        if session.estimated_tokens <= threshold_tokens:
+        if not force and session.estimated_tokens <= threshold_tokens:
             return
 
         logger.info(
@@ -767,29 +893,42 @@ class GlmAcpAgent(acp.Agent):
             session.context_size,
         )
 
-        # Notify the user that compaction is happening
-        await self._send_message(
-            session.id,
-            "\n\n_Compacting conversation context…_\n\n",
-        )
+        # Notify the user that compaction is happening (skip if forced —
+        # the /compact command already shows its own message)
+        if not force:
+            await self._send_message(
+                session.id,
+                "\n\n_Compacting conversation context…_\n\n",
+            )
 
         # --- Identify the system prompt ---
         messages = session.messages
         system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
 
         # --- Partition: summarize everything except system + recent ---
-        compactable = [m for m in messages if m is not system_msg]
+        # Use index 0 as the system message reference — avoid identity check
+        # (is) since deserialized messages are different objects.
+        compactable = messages[1:] if messages and messages[0].get("role") == "system" else messages
         if len(compactable) <= COMPACTION_KEEP_RECENT:
             return  # not enough to compact
 
         to_summarize = compactable[:-COMPACTION_KEEP_RECENT]
         keep_recent = compactable[-COMPACTION_KEEP_RECENT:]
 
+        # --- Adjust boundary so we don't split tool-call ↔ tool-result pairs ---
+        # If the first kept message is a tool result, its corresponding
+        # assistant tool_call was summarized away — move it to summarize too.
+        # Conversely, if the last summarized message has tool_calls, those
+        # tool results must also be summarized (not kept).
+        while keep_recent and keep_recent[0].get("role") == "tool":
+            to_summarize.append(keep_recent.pop(0))
+
         # --- Summarize ---
         summary = await client.summarize_messages(to_summarize)
 
         # --- Rebuild message list ---
         new_messages: list[dict[str, Any]] = []
+        system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
         if system_msg:
             new_messages.append(system_msg)
         new_messages.append({
@@ -916,6 +1055,11 @@ class GlmAcpAgent(acp.Agent):
 
     async def _send_message(self, session_id: str, text: str) -> None:
         chunk = acp.update_agent_message_text(text)
+        await self._conn.session_update(session_id=session_id, update=chunk)
+
+    async def _send_user_message(self, session_id: str, text: str) -> None:
+        """Echo a user message back to the UI (for slash commands)."""
+        chunk = acp.update_user_message_text(text)
         await self._conn.session_update(session_id=session_id, update=chunk)
 
     @staticmethod

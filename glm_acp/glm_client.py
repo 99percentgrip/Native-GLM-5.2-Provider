@@ -110,7 +110,7 @@ class GlmClient:
             COMPACTION_SUMMARY_MAX_TOKENS,
             MAX_TOKENS_BY_MODEL.get(self.model, DEFAULT_MAX_TOKENS),
         )
-        body = {
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
@@ -118,8 +118,10 @@ class GlmClient:
             ],
             "stream": False,
             "max_tokens": max_tokens,
-            "thinking": {"type": "disabled"},
         }
+        # Vision models don't support the thinking parameter
+        if self.model not in VISION_MODELS:
+            body["thinking"] = {"type": "disabled"}
         resp = await self._client.post("/chat/completions", json=body)
         if resp.status_code != 200:
             raise RuntimeError(
@@ -253,13 +255,15 @@ class GlmClient:
                 if finish:
                     result.finish_reason = finish
 
-            usage = chunk.get("usage")
-            if usage:
-                result.usage = {
-                    "input_tokens": usage.get("prompt_tokens", 0),
-                    "output_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                # Z.ai sends usage in the last chunk(s) — capture it whenever
+                # it appears rather than only after the loop ends.
+                usage = chunk.get("usage")
+                if usage:
+                    result.usage = {
+                        "input_tokens": usage.get("prompt_tokens", 0),
+                        "output_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
 
         for idx in sorted(tool_accs):
             acc = tool_accs[idx]
