@@ -153,6 +153,35 @@ _COMPACTION_MARKER_OPEN = (
 )
 _COMPACTION_MARKER_CLOSE = "\n</conversation_summary>"
 
+# Valid ACP plan entry literals (must match acp.schema PlanEntryStatus/Priority)
+_VALID_STATUSES = {"pending", "in_progress", "completed"}
+_VALID_PRIORITIES = {"high", "medium", "low"}
+
+
+def _sanitize_status(value: Any) -> str:
+    """Coerce a model-supplied status to a valid ACP PlanEntryStatus."""
+    v = str(value).strip().lower()
+    # Common synonyms the model might use
+    if v in ("done", "finished", "complete"):
+        return "completed"
+    if v in ("in-progress", "active", "working", "current"):
+        return "in_progress"
+    if v in ("todo", "not_started", "new"):
+        return "pending"
+    return v if v in _VALID_STATUSES else "pending"
+
+
+def _sanitize_priority(value: Any) -> str:
+    """Coerce a model-supplied priority to a valid ACP PlanEntryPriority."""
+    v = str(value).strip().lower()
+    if v in ("critical", "urgent", "p0"):
+        return "high"
+    if v in ("normal", "default"):
+        return "medium"
+    if v in ("minor", "low-priority"):
+        return "low"
+    return v if v in _VALID_PRIORITIES else "medium"
+
 
 class Session:
     """Per-session state."""
@@ -704,8 +733,13 @@ class GlmAcpAgent(acp.Agent):
 
                     # --- Plan tool: handled in-agent, not via sandbox ---
                     if tool_name == "update_plan":
-                        await self._complete_tool(session.id, tc_id, "Plan updated.")
-                        output = await self._handle_update_plan(session, tc_id, tool_args)
+                        try:
+                            output = await self._handle_update_plan(session, tc_id, tool_args)
+                            await self._complete_tool(session.id, tc_id, output)
+                        except Exception as e:
+                            logger.exception("update_plan failed")
+                            output = f"Error updating plan: {e}"
+                            await self._fail_tool(session.id, tc_id, output)
                         session.messages.append({
                             "role": "tool",
                             "tool_call_id": tc_id,
@@ -831,10 +865,16 @@ class GlmAcpAgent(acp.Agent):
         tasks = args.get("tasks", [])
         entries = []
         for task in tasks:
+            # Defensive: model may send strings or malformed objects
+            if isinstance(task, str):
+                task = {"content": task}
+            if not isinstance(task, dict):
+                continue
+            # Sanitize status/priority to valid ACP literals
             entries.append({
-                "content": task.get("content", ""),
-                "priority": task.get("priority", "medium"),
-                "status": task.get("status", "pending"),
+                "content": str(task.get("content", "")),
+                "priority": _sanitize_priority(task.get("priority", "medium")),
+                "status": _sanitize_status(task.get("status", "pending")),
             })
 
         session.plan = entries
@@ -851,16 +891,21 @@ class GlmAcpAgent(acp.Agent):
         )
 
     async def _send_plan(self, session: Session) -> None:
-        """Send the current plan as an ACP plan session update."""
+        """Send the current plan as an ACP plan session update.
+
+        Sanitizes status/priority on each entry defensively — entries may
+        come from deserialized session data on disk.
+        """
         from acp.helpers import plan_entry
 
         entries = [
             plan_entry(
-                content=e["content"],
-                priority=e.get("priority", "medium"),
-                status=e.get("status", "pending"),
+                content=str(e.get("content", "")),
+                priority=_sanitize_priority(e.get("priority", "medium")),
+                status=_sanitize_status(e.get("status", "pending")),
             )
             for e in session.plan
+            if isinstance(e, dict)
         ]
         update = acp.update_plan(entries)
         await self._conn.session_update(session_id=session.id, update=update)

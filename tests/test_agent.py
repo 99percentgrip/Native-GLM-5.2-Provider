@@ -261,6 +261,175 @@ class TestPlanTool:
 
 
 # ============================================================
+# Plan tool — edge cases and sanitization
+# ============================================================
+
+class TestPlanToolEdgeCases:
+    @pytest.mark.asyncio
+    async def test_invalid_status_normalized(self, agent, session):
+        """Model sends 'done' instead of 'completed' — should be sanitized."""
+        args = {"tasks": [
+            {"content": "Task 1", "status": "done", "priority": "high"},
+            {"content": "Task 2", "status": "in-progress", "priority": "low"},
+            {"content": "Task 3", "status": "active", "priority": "medium"},
+            {"content": "Task 4", "status": "todo", "priority": "medium"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert session.plan[0]["status"] == "completed"
+        assert session.plan[1]["status"] == "in_progress"
+        assert session.plan[2]["status"] == "in_progress"
+        assert session.plan[3]["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_invalid_priority_normalized(self, agent, session):
+        """Model sends 'urgent' instead of 'high' — should be sanitized."""
+        args = {"tasks": [
+            {"content": "Task 1", "status": "pending", "priority": "urgent"},
+            {"content": "Task 2", "status": "pending", "priority": "critical"},
+            {"content": "Task 3", "status": "pending", "priority": "normal"},
+            {"content": "Task 4", "status": "pending", "priority": "bogus"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert session.plan[0]["priority"] == "high"
+        assert session.plan[1]["priority"] == "high"
+        assert session.plan[2]["priority"] == "medium"
+        assert session.plan[3]["priority"] == "medium"  # default fallback
+
+    @pytest.mark.asyncio
+    async def test_garbage_status_falls_back(self, agent, session):
+        """Completely unrecognized status falls back to 'pending'."""
+        args = {"tasks": [
+            {"content": "Task", "status": "banana", "priority": "high"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert session.plan[0]["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_string_task(self, agent, session):
+        """Model sends a bare string instead of a dict — should be handled."""
+        args = {"tasks": ["Just a plain string task"]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert "1 tasks" in result
+        assert session.plan[0]["content"] == "Just a plain string task"
+        assert session.plan[0]["status"] == "pending"  # default
+        assert session.plan[0]["priority"] == "medium"  # default
+
+    @pytest.mark.asyncio
+    async def test_non_dict_task_skipped(self, agent, session):
+        """Non-dict, non-string entries are silently skipped."""
+        args = {"tasks": [
+            42,
+            None,
+            {"content": "valid", "status": "pending", "priority": "high"},
+            ["nested", "list"],
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert "1 tasks" in result
+        assert len(session.plan) == 1
+        assert session.plan[0]["content"] == "valid"
+
+    @pytest.mark.asyncio
+    async def test_missing_fields_defaulted(self, agent, session):
+        """Task dict missing status/priority gets safe defaults."""
+        args = {"tasks": [
+            {"content": "just content"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert session.plan[0]["status"] == "pending"
+        assert session.plan[0]["priority"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_missing_tasks_key(self, agent, session):
+        """args dict with no 'tasks' key — should produce empty plan."""
+        result = await agent._handle_update_plan(session, "tc1", {})
+        assert "0 tasks" in result
+        assert session.plan == []
+
+    @pytest.mark.asyncio
+    async def test_content_coerced_to_string(self, agent, session):
+        """Non-string content (e.g. int) should be coerced to str."""
+        args = {"tasks": [
+            {"content": 12345, "status": "pending", "priority": "high"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert session.plan[0]["content"] == "12345"
+
+    @pytest.mark.asyncio
+    async def test_plan_summary_counts(self, agent, session):
+        """The returned string should have correct counts."""
+        args = {"tasks": [
+            {"content": "a", "status": "completed", "priority": "high"},
+            {"content": "b", "status": "completed", "priority": "high"},
+            {"content": "c", "status": "in_progress", "priority": "high"},
+            {"content": "d", "status": "in_progress", "priority": "high"},
+            {"content": "e", "status": "pending", "priority": "high"},
+            {"content": "f", "status": "pending", "priority": "high"},
+        ]}
+        result = await agent._handle_update_plan(session, "tc1", args)
+        assert "2 completed" in result
+        assert "2 in progress" in result
+        assert "2 pending" in result
+
+    @pytest.mark.asyncio
+    async def test_plan_persisted_to_store(self, agent, session, tmp_path):
+        """_handle_update_plan should save to session store."""
+        agent._store = MagicMock()
+        agent._store.save = MagicMock()
+        args = {"tasks": [{"content": "task", "status": "pending", "priority": "high"}]}
+        await agent._handle_update_plan(session, "tc1", args)
+        assert agent._store.save.called
+
+
+class TestPlanSanitizers:
+    """Unit tests for _sanitize_status and _sanitize_priority."""
+
+    def test_sanitize_status_synonyms(self):
+        from glm_acp.agent import _sanitize_status
+        assert _sanitize_status("done") == "completed"
+        assert _sanitize_status("Finished") == "completed"
+        assert _sanitize_status("COMPLETE") == "completed"
+        assert _sanitize_status("in-progress") == "in_progress"
+        assert _sanitize_status("active") == "in_progress"
+        assert _sanitize_status("working") == "in_progress"
+        assert _sanitize_status("todo") == "pending"
+        assert _sanitize_status("not_started") == "pending"
+
+    def test_sanitize_status_valid_passthrough(self):
+        from glm_acp.agent import _sanitize_status
+        assert _sanitize_status("pending") == "pending"
+        assert _sanitize_status("in_progress") == "in_progress"
+        assert _sanitize_status("completed") == "completed"
+
+    def test_sanitize_status_unknown(self):
+        from glm_acp.agent import _sanitize_status
+        assert _sanitize_status("banana") == "pending"
+        assert _sanitize_status(None) == "pending"
+        assert _sanitize_status("") == "pending"
+        assert _sanitize_status(123) == "pending"
+
+    def test_sanitize_priority_synonyms(self):
+        from glm_acp.agent import _sanitize_priority
+        assert _sanitize_priority("urgent") == "high"
+        assert _sanitize_priority("critical") == "high"
+        assert _sanitize_priority("p0") == "high"
+        assert _sanitize_priority("normal") == "medium"
+        assert _sanitize_priority("default") == "medium"
+        assert _sanitize_priority("minor") == "low"
+
+    def test_sanitize_priority_valid_passthrough(self):
+        from glm_acp.agent import _sanitize_priority
+        assert _sanitize_priority("high") == "high"
+        assert _sanitize_priority("medium") == "medium"
+        assert _sanitize_priority("low") == "low"
+
+    def test_sanitize_priority_unknown(self):
+        from glm_acp.agent import _sanitize_priority
+        assert _sanitize_priority("bogus") == "medium"
+        assert _sanitize_priority(None) == "medium"
+        assert _sanitize_priority("") == "medium"
+
+
+# ============================================================
 # Friendly errors
 # ============================================================
 
