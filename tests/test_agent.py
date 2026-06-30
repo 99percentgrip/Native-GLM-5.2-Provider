@@ -65,7 +65,8 @@ class TestSessionSerialization:
         d = session.to_dict()
         for field in ["cwd", "model", "thought_level", "mode", "api_endpoint",
                        "title", "permission_mode", "plan", "messages",
-                       "total_input_tokens", "total_output_tokens"]:
+                       "total_input_tokens", "total_output_tokens",
+                       "estimated_tokens"]:
             assert field in d, f"Missing field: {field}"
 
     def test_round_trip(self, session):
@@ -74,6 +75,7 @@ class TestSessionSerialization:
         session.plan = [{"content": "task", "status": "pending", "priority": "high"}]
         session.total_input_tokens = 5000
         session.total_output_tokens = 2000
+        session.estimated_tokens = 3500
 
         d = session.to_dict()
         restored = Session.from_dict(d, "new-id")
@@ -83,6 +85,7 @@ class TestSessionSerialization:
         assert restored.plan == session.plan
         assert restored.total_input_tokens == 5000
         assert restored.total_output_tokens == 2000
+        assert restored.estimated_tokens == 3500
 
     def test_old_session_backward_compat(self):
         old_data = {"cwd": ".", "model": "glm-5.2", "messages": [], "mode": "code"}
@@ -92,6 +95,14 @@ class TestSessionSerialization:
         assert s.permission_mode == "ask"
         assert s.total_input_tokens == 0
         assert s.total_output_tokens == 0
+        assert s.estimated_tokens == 0  # default for old sessions
+
+    def test_context_size_restored(self, session):
+        """context_size must be set based on model after restore."""
+        session.model = "glm-4.5v"
+        d = session.to_dict()
+        restored = Session.from_dict(d, "new-id")
+        assert restored.context_size == CONTEXT_WINDOW_TOKENS["glm-4.5v"]
 
 
 # ============================================================
@@ -523,3 +534,110 @@ class TestToolTitles:
             name = tool["function"]["name"]
             title = agent._tool_title(name)
             assert title != name, f"{name} has no custom title"
+
+
+# ============================================================
+# Permission system
+# ============================================================
+
+class TestPermissionSystem:
+    @pytest.mark.asyncio
+    async def test_bypass_mode_allows_all(self, agent, session):
+        session.permission_mode = "bypass"
+        for tool in ("write_file", "edit_file", "run_command", "read_file"):
+            permitted, _ = await agent._check_permission(session, "tc1", tool, {})
+            assert permitted, f"{tool} should be allowed in bypass mode"
+
+    @pytest.mark.asyncio
+    async def test_read_mode_blocks_destructive(self, agent, session):
+        session.permission_mode = "read"
+        for tool in ("write_file", "edit_file", "run_command"):
+            permitted, reason = await agent._check_permission(session, "tc1", tool, {})
+            assert not permitted, f"{tool} should be blocked in read mode"
+            assert "read-only" in reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_read_mode_allows_safe_tools(self, agent, session):
+        session.permission_mode = "read"
+        for tool in ("read_file", "list_directory", "search_files", "grep"):
+            permitted, _ = await agent._check_permission(session, "tc1", tool, {})
+            assert permitted, f"{tool} should be allowed in read mode"
+
+    @pytest.mark.asyncio
+    async def test_ask_mode_allows_safe_tools(self, agent, session):
+        """In ask mode, non-destructive tools should be auto-approved."""
+        session.permission_mode = "ask"
+        for tool in ("read_file", "list_directory", "search_files", "grep"):
+            permitted, _ = await agent._check_permission(session, "tc1", tool, {})
+            assert permitted, f"{tool} should be auto-approved in ask mode"
+
+    @pytest.mark.asyncio
+    async def test_ask_mode_requests_permission_for_destructive(self, agent, session):
+        """In ask mode, destructive tools should trigger request_permission."""
+        session.permission_mode = "ask"
+        # Mock the permission response as 'allow'
+        from unittest.mock import MagicMock as _MM
+        mock_resp = _MM()
+        mock_resp.outcome = _MM(outcome="selected", option_id="allow")
+        agent._conn.request_permission = AsyncMock(return_value=mock_resp)
+
+        permitted, _ = await agent._check_permission(session, "tc1", "write_file", {})
+        assert permitted
+        agent._conn.request_permission.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ask_mode_denied_permission(self, agent, session):
+        """When user denies, should return False with reason."""
+        session.permission_mode = "ask"
+        from unittest.mock import MagicMock as _MM
+        mock_resp = _MM()
+        mock_resp.outcome = _MM(outcome="selected", option_id="reject")
+        agent._conn.request_permission = AsyncMock(return_value=mock_resp)
+
+        permitted, reason = await agent._check_permission(session, "tc1", "edit_file", {})
+        assert not permitted
+        assert "denied" in reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_permission_error_handled_gracefully(self, agent, session):
+        """If request_permission throws, should deny gracefully not crash."""
+        session.permission_mode = "ask"
+        agent._conn.request_permission = AsyncMock(side_effect=RuntimeError("disconnected"))
+
+        permitted, reason = await agent._check_permission(session, "tc1", "write_file", {})
+        assert not permitted
+        assert "could not request permission" in reason.lower()
+
+
+# ============================================================
+# Friendly errors — additional coverage
+# ============================================================
+
+class TestFriendlyErrorsExtended:
+    def test_server_error_500(self, agent, session):
+        from glm_acp.glm_client import GlmApiError
+        msg = agent._friendly_error(GlmApiError(500, "internal error"), session)
+        assert "server error" in msg.lower()
+
+    def test_server_error_503(self, agent, session):
+        from glm_acp.glm_client import GlmApiError
+        msg = agent._friendly_error(GlmApiError(503, "unavailable"), session)
+        assert "server error" in msg.lower() or "temporary" in msg.lower()
+
+    def test_unknown_api_error(self, agent, session):
+        from glm_acp.glm_client import GlmApiError
+        msg = agent._friendly_error(GlmApiError(418, "I'm a teapot"), session)
+        assert "418" in msg
+
+    def test_generic_error_fallback(self, agent, session):
+        msg = agent._friendly_error(ValueError("something broke"), session)
+        assert "something broke" in msg
+
+    def test_long_error_truncated(self, agent, session):
+        long_msg = "x" * 5000
+        msg = agent._friendly_error(ValueError(long_msg), session)
+        assert len(msg) <= 500
+
+    def test_connection_refused(self, agent, session):
+        msg = agent._friendly_error(ConnectionRefusedError("connection refused"), session)
+        assert "network" in msg.lower() or "connection" in msg.lower()

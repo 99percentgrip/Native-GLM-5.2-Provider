@@ -229,6 +229,7 @@ class Session:
             "messages": self.messages,
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
+            "estimated_tokens": self.estimated_tokens,
         }
 
     @classmethod
@@ -250,6 +251,7 @@ class Session:
         session.permission_mode = data.get("permission_mode", "ask")
         session.total_input_tokens = data.get("total_input_tokens", 0)
         session.total_output_tokens = data.get("total_output_tokens", 0)
+        session.estimated_tokens = data.get("estimated_tokens", 0)
         messages = data.get("messages")
         if messages:
             session.messages = messages
@@ -717,13 +719,14 @@ class GlmAcpAgent(acp.Agent):
                     session.messages.append({"role": "assistant", "content": result.content})
                     return "end_turn"
 
-                assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-                assistant_msg["tool_calls"] = [
-                    {"id": tc["id"], "type": "function",
-                     "function": {"name": tc["function"]["name"],
-                                  "arguments": json.dumps(tc["function"]["arguments"])}}
-                    for tc in result.tool_calls
-                ]
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content or None}
+                if result.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {"id": tc["id"], "type": "function",
+                         "function": {"name": tc["function"]["name"],
+                                      "arguments": json.dumps(tc["function"]["arguments"])}}
+                        for tc in result.tool_calls
+                    ]
                 session.messages.append(assistant_msg)
 
                 for tc in result.tool_calls:
@@ -965,11 +968,17 @@ class GlmAcpAgent(acp.Agent):
                 name="Deny",
             ),
         ]
-        resp = await self._conn.request_permission(
-            options=opts,
-            session_id=session.id,
-            tool_call=tc_update,
-        )
+        try:
+            resp = await self._conn.request_permission(
+                options=opts,
+                session_id=session.id,
+                tool_call=tc_update,
+            )
+        except Exception as e:
+            logger.warning("request_permission failed: %s — defaulting to deny", e)
+            msg = f"Could not request permission for '{tool_name}': {e}"
+            await self._send_message(session.id, f"\n\n⚠️ {msg}\n")
+            return False, msg
 
         outcome = resp.outcome
         if outcome.outcome == "selected" and outcome.option_id == "allow":
