@@ -259,3 +259,60 @@ class TestToolResultStructure:
         assert r.line is None
         assert r.old_text is None
         assert r.new_text is None
+
+
+# ============================================================
+# Edge cases: binary output, bad timeouts
+# ============================================================
+
+class TestToolEdgeCases:
+    @pytest.mark.asyncio
+    async def test_run_command_binary_output(self, tmp_path):
+        """Command that outputs binary data should not crash."""
+        sandbox = Sandbox(str(tmp_path))
+        # printf outputs raw bytes including non-UTF8
+        result = await execute_tool("run_command", {"command": "printf '\\xff\\xfe'"}, sandbox)
+        assert isinstance(result.output, str)
+
+    @pytest.mark.asyncio
+    async def test_run_command_string_timeout_normalized(self, tmp_path):
+        """Non-numeric timeout should fall back to default."""
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool(
+            "run_command", {"command": "echo hi", "timeout": "not-a-number"}, sandbox
+        )
+        assert "hi" in result.output
+
+    @pytest.mark.asyncio
+    async def test_run_command_zero_timeout_normalized(self, tmp_path):
+        """Zero timeout should fall back to default."""
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool(
+            "run_command", {"command": "echo hi", "timeout": 0}, sandbox
+        )
+        assert "hi" in result.output
+
+    @pytest.mark.asyncio
+    async def test_run_command_negative_timeout_normalized(self, tmp_path):
+        """Negative timeout should fall back to default."""
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool(
+            "run_command", {"command": "echo hi", "timeout": -5}, sandbox
+        )
+        assert "hi" in result.output
+
+    @pytest.mark.asyncio
+    async def test_read_file_missing_path_key(self, tmp_path):
+        """Missing path key should raise ToolError."""
+        from glm_acp.tools import ToolError
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError):
+            await execute_tool("read_file", {}, sandbox)
+
+    @pytest.mark.asyncio
+    async def test_write_file_missing_content_key(self, tmp_path):
+        """Missing content key should raise ToolError."""
+        from glm_acp.tools import ToolError
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError):
+            await execute_tool("write_file", {"path": "x.py"}, sandbox)

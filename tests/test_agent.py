@@ -522,6 +522,100 @@ class TestFork:
         assert f.total_input_tokens == 3000
         assert len(f.messages) == len(session.messages)
 
+    @pytest.mark.asyncio
+    async def test_fork_is_deep_copy(self, agent, session):
+        """Fork must not share mutable references with the parent."""
+        agent._sessions[session.id] = session
+        session.messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "a.py"}'}}
+            ]},
+        ]
+
+        fork = await agent.fork_session(cwd=".", session_id=session.id)
+        f = agent._sessions[fork.session_id]
+
+        # Mutate the fork's nested tool_call
+        f.messages[1]["tool_calls"][0]["function"]["name"] = "write_file"
+        f.messages[1]["tool_calls"][0]["function"]["arguments"] = '{"path": "b.py"}'
+
+        # Parent must be unaffected
+        assert session.messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
+        assert session.messages[1]["tool_calls"][0]["function"]["arguments"] == '{"path": "a.py"}'
+
+    @pytest.mark.asyncio
+    async def test_fork_copies_estimated_tokens(self, agent, session):
+        """Fork should also copy estimated_tokens."""
+        agent._sessions[session.id] = session
+        session.estimated_tokens = 50000
+        fork = await agent.fork_session(cwd=".", session_id=session.id)
+        f = agent._sessions[fork.session_id]
+        assert f.estimated_tokens == 50000
+
+    @pytest.mark.asyncio
+    async def test_fork_nonexistent_session_raises(self, agent):
+        with pytest.raises(RuntimeError, match="Cannot fork"):
+            await agent.fork_session(cwd=".", session_id="nonexistent")
+
+
+# ============================================================
+# Replay history (session restore)
+# ============================================================
+
+class TestReplayHistory:
+    @pytest.mark.asyncio
+    async def test_replay_skips_system_messages(self, agent, session):
+        """System messages should not be replayed to the UI."""
+        session.messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        await agent._replay_history(session)
+        # Should have called session_update for user and assistant, not system
+        calls = agent._conn.session_update.call_args_list
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_replay_handles_list_content(self, agent, session):
+        """Vision messages with list content must not crash replay."""
+        session.messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "What is in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ]},
+        ]
+        # Should not raise
+        await agent._replay_history(session)
+        calls = agent._conn.session_update.call_args_list
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_replay_skips_empty_content(self, agent, session):
+        """Messages with no content should be skipped."""
+        session.messages = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": None},
+            {"role": "user", "content": "real message"},
+        ]
+        await agent._replay_history(session)
+        calls = agent._conn.session_update.call_args_list
+        assert len(calls) == 1  # only the real message
+
+    @pytest.mark.asyncio
+    async def test_replay_skips_tool_messages(self, agent, session):
+        """Tool result messages should not be replayed to the UI."""
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "tool_call_id": "tc1", "content": "file contents"},
+            {"role": "assistant", "content": "done"},
+        ]
+        await agent._replay_history(session)
+        calls = agent._conn.session_update.call_args_list
+        assert len(calls) == 2  # user + assistant, not tool
+
 
 # ============================================================
 # Tool titles

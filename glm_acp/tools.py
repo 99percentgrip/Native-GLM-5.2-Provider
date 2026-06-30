@@ -413,6 +413,8 @@ async def _grep(args: dict[str, Any], sandbox: Sandbox) -> str:
 async def _run_command(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     command = args["command"]
     timeout = args.get("timeout", 120)
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        timeout = 120
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(sandbox.roots[0]),
@@ -425,7 +427,8 @@ async def _run_command(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
         proc.kill()
         await proc.wait()
         raise ToolError(f"Command timed out after {timeout}s")
-    output = stdout.decode()
+    # Use errors="replace" to handle binary output gracefully
+    output = stdout.decode(errors="replace")
     if stderr:
-        output += "\n" + stderr.decode()
+        output += "\n" + stderr.decode(errors="replace")
     return ToolResult(output=output.strip() if output.strip() else "(no output)")

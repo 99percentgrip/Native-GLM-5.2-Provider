@@ -7,6 +7,7 @@ over stdio, so Zed (or any ACP client) launches it as a subprocess.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import sys
@@ -500,10 +501,11 @@ class GlmAcpAgent(acp.Agent):
         new_session.api_endpoint = parent.api_endpoint
         new_session.permission_mode = parent.permission_mode
         new_session.plan = [dict(e) for e in parent.plan]  # deep copy plan entries
-        new_session.messages = [dict(m) for m in parent.messages]  # shallow copy messages
+        new_session.messages = copy.deepcopy(parent.messages)  # deep copy messages
         new_session.context_size = parent.context_size
         new_session.total_input_tokens = parent.total_input_tokens
         new_session.total_output_tokens = parent.total_output_tokens
+        new_session.estimated_tokens = parent.estimated_tokens
 
         self._sessions[new_session.id] = new_session
         self._store.save(new_session.id, new_session.to_dict())
@@ -1380,14 +1382,18 @@ class GlmAcpAgent(acp.Agent):
         """
         for msg in session.messages:
             role = msg.get("role")
-            content = msg.get("content", "") or ""
+            content = msg.get("content", "")
+            # Handle list content (vision messages with multipart blocks)
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if not content:
+                continue
             if role == "user":
-                if not content:
-                    continue
                 chunk = acp.update_user_message_text(content)
             elif role == "assistant":
-                if not content:
-                    continue
                 chunk = acp.update_agent_message_text(content)
             else:
                 # Skip system messages, tool results, and internal entries.
