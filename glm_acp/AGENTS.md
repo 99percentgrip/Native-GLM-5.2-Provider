@@ -62,7 +62,6 @@ and crashes the turn.
 
 Session config options advertised to the client:
 - `model` (category: `model`) — GLM model selector
-- `model` (category: `model`) — GLM model selector
 - `thought_level` (category: `thought_level`) — reasoning depth: Off / Standard (all models); Deep · High / Deep · Max (GLM-5.2 only, maps to `reasoning_effort: high|max`)
 - `permission_mode` (category: `permissions`) — tool execution permission: Ask / Read Only / Bypass
 
