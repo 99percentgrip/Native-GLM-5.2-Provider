@@ -541,14 +541,25 @@ class GlmAcpAgent(acp.Agent):
     ) -> SetSessionConfigOptionResponse | None:
         session = self._sessions[session_id]
         if config_id == "model":
-            session.model = str(value)
-            session.context_size = CONTEXT_WINDOW_TOKENS.get(session.model, 1_000_000)
-            # If the new model doesn't support the current thought level,
-            # fall back to the closest supported level.
-            if session.thought_level not in thought_levels_for_model(session.model):
-                session.thought_level = "enabled" if "enabled" in thought_levels_for_model(session.model) else "disabled"
+            requested = str(value)
+            # Validate that this model is available on the current plan
+            if requested not in models_for_plan(session.api_endpoint):
+                # Invalid model for this plan — keep current, log warning
+                logger.warning("Model %s not available on plan %s", requested, session.api_endpoint)
+            else:
+                session.model = requested
+                session.context_size = CONTEXT_WINDOW_TOKENS.get(session.model, 1_000_000)
+                # If the new model doesn't support the current thought level,
+                # fall back to the closest supported level.
+                if session.thought_level not in thought_levels_for_model(session.model):
+                    session.thought_level = "enabled" if "enabled" in thought_levels_for_model(session.model) else "disabled"
         elif config_id == "thought_level":
-            session.thought_level = str(value)
+            requested = str(value)
+            # Validate that this thought level is available for the current model
+            available = thought_levels_for_model(session.model)
+            if requested in available:
+                session.thought_level = requested
+            # Silently ignore invalid levels — keep the current setting
         elif config_id == "api_endpoint":
             session.api_endpoint = str(value)
             # If the current model isn't available on the new plan,
@@ -579,6 +590,12 @@ class GlmAcpAgent(acp.Agent):
         **kwargs: Any,
     ) -> Any:
         session = self._sessions[session_id]
+        # Validate mode_id against known modes
+        valid_modes = {m.id for m in MODE_LIST}
+        if mode_id not in valid_modes:
+            logger.warning("Invalid mode %s — ignoring", mode_id)
+            from acp.schema import SetSessionModeResponse
+            return SetSessionModeResponse()
         session.mode = mode_id
         self._store.save(session.id, session.to_dict())
         from acp.schema import SetSessionModeResponse
@@ -1124,8 +1141,11 @@ class GlmAcpAgent(acp.Agent):
             ]
             for msg in session.messages:
                 role = msg.get("role", "")
-                content = msg.get("content", "")
-                if isinstance(content, list):
+                content = msg.get("content")
+                # Normalize: None -> "", list -> extracted text
+                if content is None:
+                    content = ""
+                elif isinstance(content, list):
                     content = " ".join(
                         b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                     )

@@ -217,6 +217,85 @@ class TestConfigSwitch:
         await agent.set_config_option("api_endpoint", session.id, "coding")
         assert session.model == "glm-5.2"  # fell back
 
+    @pytest.mark.asyncio
+    async def test_invalid_model_rejected(self, agent, session):
+        """Invalid model should be ignored, not accepted."""
+        agent._sessions[session.id] = session
+        original_model = session.model
+        await agent.set_config_option("model", session.id, "gpt-4o")
+        assert session.model == original_model  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_model_not_on_plan_rejected(self, agent, session):
+        """Vision model on coding plan should be rejected."""
+        agent._sessions[session.id] = session
+        session.api_endpoint = "coding"
+        original_model = session.model
+        await agent.set_config_option("model", session.id, "glm-4.5v")
+        assert session.model == original_model  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_invalid_thought_level_rejected(self, agent, session):
+        """Invalid thought level for model should be ignored."""
+        agent._sessions[session.id] = session
+        session.model = "glm-4.7"  # doesn't support 'max'
+        session.thought_level = "enabled"
+        await agent.set_config_option("thought_level", session.id, "max")
+        assert session.thought_level == "enabled"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_valid_thought_level_accepted(self, agent, session):
+        """Valid thought level should be accepted."""
+        agent._sessions[session.id] = session
+        session.model = "glm-5.2"
+        session.thought_level = "enabled"
+        await agent.set_config_option("thought_level", session.id, "max")
+        assert session.thought_level == "max"
+
+    @pytest.mark.asyncio
+    async def test_thought_level_max_on_vision_rejected(self, agent, session):
+        """Vision models only support 'disabled' thought level."""
+        agent._sessions[session.id] = session
+        session.model = "glm-4.5v"
+        session.thought_level = "disabled"
+        await agent.set_config_option("thought_level", session.id, "enabled")
+        assert session.thought_level == "disabled"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_model_switch_updates_thought_level(self, agent, session):
+        """Switching from glm-5.2 (max) to glm-4.7 should downgrade thought."""
+        agent._sessions[session.id] = session
+        session.model = "glm-5.2"
+        session.thought_level = "max"
+        await agent.set_config_option("model", session.id, "glm-4.7")
+        assert session.model == "glm-4.7"
+        assert session.thought_level == "enabled"  # fell back from max
+
+    @pytest.mark.asyncio
+    async def test_invalid_permission_mode_ignored(self, agent, session):
+        """Invalid permission mode should still be stored (UI-driven)."""
+        agent._sessions[session.id] = session
+        await agent.set_config_option("permission_mode", session.id, "invalid_mode")
+        # We don't strictly validate this — the check_permission handles it
+        # by defaulting to the "ask" branch for unknown modes
+        assert session.permission_mode == "invalid_mode"
+
+
+class TestSetSessionMode:
+    @pytest.mark.asyncio
+    async def test_valid_mode(self, agent, session):
+        agent._sessions[session.id] = session
+        await agent.set_session_mode("ask", session.id)
+        assert session.mode == "ask"
+
+    @pytest.mark.asyncio
+    async def test_invalid_mode_ignored(self, agent, session):
+        """Invalid mode should be ignored, not stored."""
+        agent._sessions[session.id] = session
+        session.mode = "code"
+        await agent.set_session_mode("invalid_mode", session.id)
+        assert session.mode == "code"  # unchanged
+
 
 # ============================================================
 # Slash commands
@@ -273,6 +352,48 @@ class TestSlashCommands:
         session.cwd = str(tmp_path)
         result = await agent._handle_command(session, "/diff")
         assert "git" in result.lower() or "diff" in result.lower() or "no uncommitted" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_export_with_none_content(self, agent, session, tmp_path):
+        """Export should handle messages with None content gracefully."""
+        session.cwd = str(tmp_path)
+        session.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+            ]},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        result = await agent._handle_command(session, "/export")
+        assert "exported" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_export_with_list_content(self, agent, session, tmp_path):
+        """Export should handle vision messages with list content."""
+        session.cwd = str(tmp_path)
+        session.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:..."}},
+            ]},
+            {"role": "assistant", "content": "It's a cat."},
+        ]
+        result = await agent._handle_command(session, "/export")
+        assert "exported" in result.lower()
+        exports = list(tmp_path.glob("conversation_export_*.md"))
+        content = exports[0].read_text()
+        assert "What is this?" in content
+
+    @pytest.mark.asyncio
+    async def test_status_with_zero_tokens(self, agent, session):
+        """Status should not crash with zero token counts."""
+        session.total_input_tokens = 0
+        session.total_output_tokens = 0
+        session.estimated_tokens = 0
+        result = await agent._handle_command(session, "/status")
+        assert "0" in result
 
 
 # ============================================================
