@@ -625,6 +625,11 @@ class GlmAcpAgent(acp.Agent):
                 await self._send_message(session.id, f"\n\n{response}\n")
             return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
 
+        # Guard: if content is empty/whitespace-only and there are no
+        # images, don't send an empty message to the API.
+        if not content.strip() and not images:
+            return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
+
         # Text-only models can't process images. Vision models can.
         is_vision_model = session.model in VISION_MODELS
 
@@ -1434,21 +1439,19 @@ class GlmAcpAgent(acp.Agent):
                 continue
             await self._conn.session_update(session_id=session.id, update=chunk)
 
-    async def _start_tool(self, session_id: str, tool_call_id: str, name: str, args: dict[str, Any] | None = None) -> None:
+    async def _start_tool(self, session_id: str, tool_call_id: str, name: str) -> None:
+        """Send initial tool-call update when streaming begins.
+
+        Location info is NOT available yet (args are streamed incrementally).
+        A follow-up _start_tool_with_location call adds the file path once
+        the full arguments are parsed.
+        """
         kind = TOOL_KINDS.get(name, "other")
-        # Extract file path for location-based tools (enables Zed "follow")
-        locations = None
-        if args and name in ("read_file", "write_file", "edit_file", "list_directory"):
-            path = args.get("path")
-            if path:
-                from acp.schema import ToolCallLocation
-                locations = [ToolCallLocation(path=path)]
         chunk = acp.start_tool_call(
             tool_call_id=tool_call_id,
             title=self._tool_title(name),
             kind=kind,
             status="pending",
-            locations=locations,
         )
         await self._conn.session_update(session_id=session_id, update=chunk)
 

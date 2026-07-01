@@ -46,7 +46,9 @@ API_ENDPOINTS: dict[str, dict[str, str]] = {
 DEFAULT_API_ENDPOINT = "coding"
 
 # --- Token estimation (heuristic) ---
-CHARS_PER_TOKEN = 4  # ~4 chars per token for mixed English/code content
+# _estimate_tokens uses 3.5 chars/token (code is denser than natural
+# language which averages ~4 chars/token). The ratio is applied locally
+# in GlmAcpAgent._estimate_tokens rather than referenced from here.
 
 # --- Context compaction (Claude Code parity) ---
 # Trigger compaction when estimated context usage exceeds this fraction of the
