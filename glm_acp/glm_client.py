@@ -178,7 +178,17 @@ class GlmClient:
             role = msg.get("role", "unknown")
             if role == "system":
                 continue  # skip system prompt — summarizer has its own
-            content = msg.get("content", "")
+            raw_content = msg.get("content")
+            # Normalize content: None -> "", list -> extracted text
+            if raw_content is None:
+                content = ""
+            elif isinstance(raw_content, list):
+                content = " ".join(
+                    b.get("text", "") for b in raw_content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            else:
+                content = str(raw_content)
             tool_calls = msg.get("tool_calls")
             tool_call_id = msg.get("tool_call_id")
 
@@ -276,7 +286,7 @@ class GlmClient:
         async with self._client.stream("POST", "/chat/completions", json=body) as resp:
             if resp.status_code != 200:
                 text = await resp.aread()
-                raise GlmApiError(resp.status_code, text.decode()[:500])
+                raise GlmApiError(resp.status_code, text.decode(errors="replace")[:500])
 
             async for line in resp.aiter_lines():
                 if self._cancelled:

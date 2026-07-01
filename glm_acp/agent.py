@@ -98,7 +98,10 @@ def build_system_prompt(cwd: str, model: str = DEFAULT_MODEL) -> str:
 
     # Detect language / framework
     cwd_path = Path(cwd)
-    files = {f.name for f in cwd_path.iterdir() if f.is_file()} if cwd_path.exists() else set()
+    try:
+        files = {f.name for f in cwd_path.iterdir() if f.is_file()} if cwd_path.exists() else set()
+    except (PermissionError, OSError):
+        files = set()
 
     if "pyproject.toml" in files:
         context_parts.append("- Python project (pyproject.toml detected)")
@@ -132,9 +135,12 @@ def build_system_prompt(cwd: str, model: str = DEFAULT_MODEL) -> str:
     elif "package-lock.json" in files: context_parts.append("- Package manager: npm")
 
     # Detect git
-    git_dir = cwd_path / ".git"
-    if git_dir.exists():
-        context_parts.append("- Version control: git")
+    try:
+        git_dir = cwd_path / ".git"
+        if git_dir.exists():
+            context_parts.append("- Version control: git")
+    except (PermissionError, OSError):
+        pass
 
     project_context = "\n".join(context_parts) if context_parts else "(no project files detected)"
     return SYSTEM_PROMPT_TEMPLATE.format(project_context=project_context, model_name=model_name)

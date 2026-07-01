@@ -55,6 +55,33 @@ class TestSystemPrompt:
         assert "Read files before editing" in prompt
         assert "update_plan" in prompt
 
+    def test_nonexistent_cwd(self):
+        """Should not crash when cwd doesn't exist."""
+        prompt = build_system_prompt("/nonexistent/path/xyz")
+        assert "no project files" in prompt
+
+    def test_permission_denied_cwd(self, tmp_path):
+        """Should not crash when cwd has no read permission (skipped if root)."""
+        import os
+        if os.geteuid() == 0:
+            pytest.skip("Cannot test permission denial as root")
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+        os.chmod(str(restricted), 0o000)
+        try:
+            prompt = build_system_prompt(str(restricted))
+            assert "no project files" in prompt or "project" in prompt
+        finally:
+            os.chmod(str(restricted), 0o755)
+
+    def test_known_model_name(self):
+        prompt = build_system_prompt(".", "glm-4.7")
+        assert "GLM-4.7" in prompt
+
+    def test_unknown_model_falls_back(self):
+        prompt = build_system_prompt(".", "some-future-model")
+        assert "some-future-model" in prompt
+
 
 # ============================================================
 # Session serialization

@@ -352,3 +352,38 @@ class TestSummarizeTranscript:
         from glm_acp.glm_client import GlmClient
         transcript = GlmClient._format_transcript([])
         assert transcript == ""
+
+    def test_format_transcript_none_content(self):
+        """Assistant message with content=None (tool_calls only)."""
+        from glm_acp.glm_client import GlmClient
+        messages = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "write_file", "arguments": '{}'}}
+            ]},
+        ]
+        transcript = GlmClient._format_transcript(messages)
+        assert "write_file" in transcript
+        assert "None" not in transcript  # None should not appear as text
+
+    def test_format_transcript_list_content(self):
+        """Vision message with list content (multipart blocks)."""
+        from glm_acp.glm_client import GlmClient
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "What is this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ]},
+        ]
+        transcript = GlmClient._format_transcript(messages)
+        assert "What is this image?" in transcript
+        assert "image_url" not in transcript  # image data not in transcript
+
+    def test_format_transcript_integer_content(self):
+        """Non-string, non-list content should be coerced gracefully."""
+        from glm_acp.glm_client import GlmClient
+        messages = [
+            {"role": "user", "content": 12345},
+        ]
+        transcript = GlmClient._format_transcript(messages)
+        assert "12345" in transcript

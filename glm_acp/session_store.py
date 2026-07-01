@@ -37,8 +37,14 @@ class SessionStore:
         self._base_dir = base_dir
 
     def _path(self, session_id: str) -> Path:
-        """Return the on-disk path for a session id."""
-        return self._base_dir / f"{session_id}.json"
+        """Return the on-disk path for a session id.
+
+        Sanitizes the session id to prevent path traversal — only
+        alphanumeric, dash, and underscore are allowed in filenames.
+        """
+        import re
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+        return self._base_dir / f"{safe_id}.json"
 
     # ------------------------------------------------------------------
     # Public API
