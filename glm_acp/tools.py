@@ -305,15 +305,27 @@ async def _read_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     path = sandbox.resolve(args["path"])
     if not path.is_file():
         raise ToolError(f"File not found: {path}")
-    text = path.read_text()
+    try:
+        text = path.read_text()
+    except UnicodeDecodeError:
+        raise ToolError(f"Cannot read binary file: {path}")
     start = args.get("start_line")
     end = args.get("end_line")
     if start or end:
+        # Coerce to int in case the model sends strings
+        try:
+            start = int(start) if start else None
+            end = int(end) if end else None
+        except (TypeError, ValueError):
+            raise ToolError("start_line and end_line must be integers")
         lines = text.splitlines(keepends=True)
-        s = (start - 1) if start else 0
-        e = end if end else len(lines)
-        text = "".join(lines[s:e])
-    return ToolResult(output=text, file_path=str(path), line=start)
+        s = (start - 1) if start and start > 0 else 0
+        e = end if end and end <= len(lines) else len(lines)
+        if s >= len(lines):
+            text = ""
+        else:
+            text = "".join(lines[s:e])
+    return ToolResult(output=text, file_path=str(path), line=start if isinstance(start, int) else None)
 
 
 async def _write_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
@@ -333,9 +345,14 @@ async def _edit_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     path = sandbox.resolve(args["path"])
     if not path.is_file():
         raise ToolError(f"File not found: {path}")
-    text = path.read_text()
-    old = args["old_text"]
-    new = args["new_text"]
+    try:
+        text = path.read_text()
+    except UnicodeDecodeError:
+        raise ToolError(f"Cannot edit binary file: {path}")
+    old = args.get("old_text", "")
+    new = args.get("new_text", "")
+    if not old:
+        raise ToolError("old_text is empty — cannot find a match")
     count = text.count(old)
     if count == 0:
         raise ToolError("old_text not found in file")
@@ -385,7 +402,10 @@ async def _grep(args: dict[str, Any], sandbox: Sandbox) -> str:
     pattern = args["pattern"]
     root = sandbox.resolve(args.get("path", "."))
     include = args.get("include")
-    regex = re.compile(pattern)
+    try:
+        regex = re.compile(pattern)
+    except re.error as e:
+        raise ToolError(f"Invalid regex pattern: {e}")
     gitignore_patterns = _load_gitignore_patterns(root)
     always_ignore = [".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".eggs"]
     results = []
@@ -399,13 +419,16 @@ async def _grep(args: dict[str, Any], sandbox: Sandbox) -> str:
         if include and not fnmatch.fnmatch(p.name, include):
             continue
         try:
-            for i, line in enumerate(p.read_text().splitlines(), 1):
-                if regex.search(line):
-                    results.append(f"{rel}:{i}: {line.strip()}")
+            content = p.read_text()
         except (UnicodeDecodeError, OSError):
             continue
+        for i, line in enumerate(content.splitlines(), 1):
+            if regex.search(line):
+                results.append(f"{rel}:{i}: {line.strip()}")
+            if len(results) >= 500:
+                results.append("... (truncated at 500 matches)")
+                break
         if len(results) >= 500:
-            results.append("... (truncated at 500 matches)")
             break
     return ToolResult(output="\n".join(results) if results else "No matches found")
 

@@ -316,3 +316,94 @@ class TestToolEdgeCases:
         sandbox = Sandbox(str(tmp_path))
         with pytest.raises(ToolError):
             await execute_tool("write_file", {"path": "x.py"}, sandbox)
+
+
+# ============================================================
+# Binary file robustness
+# ============================================================
+
+class TestBinaryFiles:
+    @pytest.mark.asyncio
+    async def test_read_file_binary(self, tmp_path):
+        """Reading a binary file should give a clear error, not crash."""
+        from glm_acp.tools import ToolError
+        (tmp_path / "data.bin").write_bytes(b"\xff\xfe\x00\x01\x02\x03")
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError, match="binary"):
+            await execute_tool("read_file", {"path": "data.bin"}, sandbox)
+
+    @pytest.mark.asyncio
+    async def test_edit_file_binary(self, tmp_path):
+        """Editing a binary file should give a clear error, not crash."""
+        from glm_acp.tools import ToolError
+        (tmp_path / "data.bin").write_bytes(b"\xff\xfe\x00\x01")
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError, match="binary"):
+            await execute_tool("edit_file", {"path": "data.bin", "old_text": "a", "new_text": "b"}, sandbox)
+
+    @pytest.mark.asyncio
+    async def test_grep_skips_binary_files(self, tmp_path):
+        """grep should skip binary files without crashing."""
+        (tmp_path / "data.bin").write_bytes(b"\xff\xfe\x00\x01search")
+        (tmp_path / "readable.py").write_text("search here\n")
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool("grep", {"pattern": "search"}, sandbox)
+        assert "readable.py" in result.output
+        assert "data.bin" not in result.output
+
+
+# ============================================================
+# Invalid regex / string line numbers
+# ============================================================
+
+class TestToolInputValidation:
+    @pytest.mark.asyncio
+    async def test_grep_invalid_regex(self, tmp_path):
+        """Invalid regex should give a clear error, not crash."""
+        from glm_acp.tools import ToolError
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError, match="Invalid regex"):
+            await execute_tool("grep", {"pattern": "[unclosed"}, sandbox)
+
+    @pytest.mark.asyncio
+    async def test_read_file_string_start_line(self, tmp_path):
+        """String start_line should be coerced to int, not crash."""
+        (tmp_path / "f.py").write_text("line1\nline2\nline3")
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool("read_file", {"path": "f.py", "start_line": "2"}, sandbox)
+        assert "line2" in result.output
+        assert "line1" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_read_file_start_beyond_file(self, tmp_path):
+        """start_line beyond file length should return empty, not crash."""
+        (tmp_path / "f.py").write_text("line1\nline2")
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool("read_file", {"path": "f.py", "start_line": 100}, sandbox)
+        assert result.output == ""
+
+    @pytest.mark.asyncio
+    async def test_read_file_line_zero(self, tmp_path):
+        """start_line=0 should behave as 'from the beginning', not wrap negative."""
+        (tmp_path / "f.py").write_text("line1\nline2\nline3")
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool("read_file", {"path": "f.py", "start_line": 0}, sandbox)
+        assert "line1" in result.output
+
+    @pytest.mark.asyncio
+    async def test_edit_file_empty_old_text(self, tmp_path):
+        """Empty old_text should give a clear error, not match everywhere."""
+        from glm_acp.tools import ToolError
+        (tmp_path / "f.py").write_text("hello world")
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError, match="empty"):
+            await execute_tool("edit_file", {"path": "f.py", "old_text": "", "new_text": "x"}, sandbox)
+
+    @pytest.mark.asyncio
+    async def test_edit_file_missing_old_text_key(self, tmp_path):
+        """Missing old_text key should default to empty and give clear error."""
+        from glm_acp.tools import ToolError
+        (tmp_path / "f.py").write_text("hello world")
+        sandbox = Sandbox(str(tmp_path))
+        with pytest.raises(ToolError, match="empty"):
+            await execute_tool("edit_file", {"path": "f.py", "new_text": "x"}, sandbox)

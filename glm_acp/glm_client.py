@@ -157,7 +157,12 @@ class GlmClient:
             resp = await self._client.post("/chat/completions", json=body)
             if resp.status_code == 200:
                 break
-            last_error = GlmApiError(resp.status_code, resp.text[:500])
+            # Decode error body safely — may contain non-UTF8 bytes
+            try:
+                err_text = resp.text[:500]
+            except Exception:
+                err_text = resp.content[:500].decode(errors="replace")
+            last_error = GlmApiError(resp.status_code, err_text)
             if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
                 raise last_error
             delay = RETRY_BASE_DELAY * (2 ** attempt)
