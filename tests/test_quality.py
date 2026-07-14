@@ -24,7 +24,7 @@ from benchmarks.eval import (
     verify,
 )
 from benchmarks.report import case_cell, load_report, row
-from benchmarks.run_live import BenchmarkAlreadyRunning, LiveRunLock
+from benchmarks.run_live import BenchmarkAlreadyRunning, LiveRunLock, process_is_alive
 from glm_acp.agent import GlmAcpAgent, Session
 from glm_acp.glm_client import StreamResult
 
@@ -188,6 +188,13 @@ async def test_unrelated_success_does_not_clear_failed_verification(tmp_path):
         item["role"] == "system" and "Automated verification guard" in item["content"]
         for item in session.messages
     )
+
+
+def test_verification_classifier_ignores_build_cache_paths():
+    command = '"/home/user/.cache/uv/builds-v0/temp/bin/python" -c "print(1)"'
+    assert GlmAcpAgent._is_verification_command(command) is False
+    assert GlmAcpAgent._is_verification_command("python -m pytest -q") is True
+    assert GlmAcpAgent._is_verification_command("npm run typecheck") is True
 
 
 @pytest.mark.asyncio
@@ -363,6 +370,27 @@ def test_live_benchmark_lock_recovers_stale_owner(tmp_path):
     with LiveRunLock(lock_path):
         assert lock_path.is_dir()
     assert not lock_path.exists()
+
+
+def test_windows_process_probe_uses_read_only_tasklist(monkeypatch):
+    tasklist = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='"python.exe","123","Console","1","10 K"\n'
+        )
+    )
+    monkeypatch.setattr("benchmarks.run_live.os.name", "nt")
+    monkeypatch.setattr("benchmarks.run_live.subprocess.run", tasklist)
+
+    assert process_is_alive(123) is True
+    assert process_is_alive(456) is False
+    assert tasklist.call_args_list[0].args[0] == [
+        "tasklist",
+        "/FI",
+        "PID eq 123",
+        "/FO",
+        "CSV",
+        "/NH",
+    ]
 
 
 def test_incremental_benchmark_artifacts_are_atomic(tmp_path):

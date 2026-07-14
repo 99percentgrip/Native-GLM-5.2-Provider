@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -209,7 +209,7 @@ def build_report(
     passed = sum(bool(item["verification"]["passed"]) for item in scored)
     return {
         "schema_version": 1,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
         "completed": len(results),
         "planned_total": planned_total,

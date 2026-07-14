@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,18 @@ class BenchmarkAlreadyRunning(RuntimeError):
 
 
 def process_is_alive(pid: int) -> bool:
+    if os.name == "nt":
+        check = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if check.returncode != 0:
+            return True
+        return any(
+            len(row) > 1 and row[1] == str(pid) for row in csv.reader(check.stdout.splitlines())
+        )
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -57,7 +70,8 @@ class LiveRunLock:
         else:
             raise BenchmarkAlreadyRunning("could not acquire the live benchmark lock")
         self.owner.write_text(
-            json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()}) + "\n",
+            json.dumps({"pid": os.getpid(), "started_at": datetime.now(timezone.utc).isoformat()})
+            + "\n",
             encoding="utf-8",
         )
         self.acquired = True
@@ -76,7 +90,7 @@ class LiveRunLock:
 
 
 def default_output_dir() -> Path:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return ROOT / "quality" / f"live-{stamp}"
 
 

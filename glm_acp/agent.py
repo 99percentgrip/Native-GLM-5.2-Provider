@@ -10,6 +10,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -961,21 +962,11 @@ class GlmAcpAgent(acp.Agent):
 
     @staticmethod
     def _is_verification_command(command: str) -> bool:
-        normalized = command.lower()
-        return any(
-            marker in normalized
-            for marker in (
-                "pytest",
-                " test",
-                "test ",
-                "ruff",
-                "lint",
-                "mypy",
-                "pyright",
-                "check",
-                "build",
-                "audit",
-                "verify",
+        return bool(
+            re.search(
+                r"\b(?:pytest|unittest|test|ruff|lint|mypy|pyright|typecheck|check|build|audit|verify)\b",
+                command,
+                flags=re.IGNORECASE,
             )
         )
 
