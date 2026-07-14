@@ -154,7 +154,7 @@ def test_zed_registry_or_unrelated_custom_entry_is_preserved(tmp_path):
     assert remove_zed_custom_agent(registry, install_dir) is None
     assert '"glm-acp"' in registry.read_text(encoding="utf-8")
 
-    unrelated = _zed_settings(tmp_path, Path("/other/bin/glm-acp"))
+    unrelated = _zed_settings(tmp_path, (tmp_path / "other" / "bin" / "glm-acp").resolve())
     assert remove_zed_custom_agent(unrelated, install_dir) is None
     assert '"glm-acp"' in unrelated.read_text(encoding="utf-8")
 
