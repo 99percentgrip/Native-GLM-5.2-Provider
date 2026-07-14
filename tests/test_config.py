@@ -1,5 +1,7 @@
 """Tests for glm_acp.config — model registry, plans, thought levels."""
 
+import os
+
 import pytest
 from glm_acp.config import (
     MODELS,
@@ -9,11 +11,16 @@ from glm_acp.config import (
     DEFAULT_MODEL,
     DEFAULT_API_ENDPOINT,
     DESTRUCTIVE_TOOLS,
+    CONFIG_DIR_ENV,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,
     thought_levels_for_model,
     models_for_plan,
     get_api_key,
+    credentials_path,
+    has_api_key,
+    load_stored_api_key,
+    store_api_key,
 )
 
 
@@ -100,9 +107,10 @@ class TestConstants:
 
 
 class TestApiKey:
-    def test_missing_key_raises(self, monkeypatch):
+    def test_missing_key_raises(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("Z_AI_API_KEY", raising=False)
+        monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path))
         with pytest.raises(RuntimeError, match="ZAI_API_KEY"):
             get_api_key()
 
@@ -114,3 +122,36 @@ class TestApiKey:
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.setenv("Z_AI_API_KEY", "alt-key-456")
         assert get_api_key() == "alt-key-456"
+
+    def test_stored_key_round_trip(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("Z_AI_API_KEY", raising=False)
+        monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path))
+
+        path = store_api_key("  stored-secret  ")
+
+        assert path == credentials_path()
+        assert load_stored_api_key() == "stored-secret"
+        assert get_api_key() == "stored-secret"
+        assert has_api_key() is True
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o077 == 0
+
+    def test_environment_key_precedes_stored_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path))
+        store_api_key("stored-secret")
+        monkeypatch.setenv("ZAI_API_KEY", "environment-secret")
+        assert get_api_key() == "environment-secret"
+
+    def test_invalid_stored_state_is_ignored(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("Z_AI_API_KEY", raising=False)
+        monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path))
+        credentials_path().write_text("not-json", encoding="utf-8")
+        assert load_stored_api_key() is None
+        assert has_api_key() is False
+
+    def test_empty_key_is_rejected(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path))
+        with pytest.raises(ValueError, match="cannot be empty"):
+            store_api_key("   ")

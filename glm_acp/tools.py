@@ -230,6 +230,18 @@ class ToolError(Exception):
     pass
 
 
+def _read_utf8_text(path: Path, action: str) -> str:
+    """Read a UTF-8 text file with platform-independent binary detection."""
+    data = path.read_bytes()
+    if b"\x00" in data:
+        raise ToolError(f"Cannot {action} binary file: {path}")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ToolError(f"Cannot {action} binary file: {path}")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 @dataclass
 class ToolResult:
     """Structured result from a tool execution.
@@ -305,10 +317,7 @@ async def _read_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     path = sandbox.resolve(args["path"])
     if not path.is_file():
         raise ToolError(f"File not found: {path}")
-    try:
-        text = path.read_text()
-    except UnicodeDecodeError:
-        raise ToolError(f"Cannot read binary file: {path}")
+    text = _read_utf8_text(path, "read")
     start = args.get("start_line")
     end = args.get("end_line")
     if start or end:
@@ -332,7 +341,7 @@ async def _write_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     path = sandbox.resolve(args["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
     old_text = path.read_text() if path.exists() else None
-    path.write_text(args["content"])
+    path.write_text(args["content"], encoding="utf-8")
     return ToolResult(
         output=f"Wrote {len(args['content'])} bytes to {path}",
         file_path=str(path),
@@ -345,10 +354,7 @@ async def _edit_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     path = sandbox.resolve(args["path"])
     if not path.is_file():
         raise ToolError(f"File not found: {path}")
-    try:
-        text = path.read_text()
-    except UnicodeDecodeError:
-        raise ToolError(f"Cannot edit binary file: {path}")
+    text = _read_utf8_text(path, "edit")
     old = args.get("old_text", "")
     new = args.get("new_text", "")
     if not old:
@@ -359,7 +365,7 @@ async def _edit_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     if count > 1:
         raise ToolError(f"old_text appears {count} times — provide more context to make it unique")
     new_text = text.replace(old, new, 1)
-    path.write_text(new_text)
+    path.write_text(new_text, encoding="utf-8")
     return ToolResult(
         output=f"Edited {path}",
         file_path=str(path),
@@ -419,8 +425,8 @@ async def _grep(args: dict[str, Any], sandbox: Sandbox) -> str:
         if include and not fnmatch.fnmatch(p.name, include):
             continue
         try:
-            content = p.read_text()
-        except (UnicodeDecodeError, OSError):
+            content = _read_utf8_text(p, "read")
+        except (ToolError, OSError):
             continue
         for i, line in enumerate(content.splitlines(), 1):
             if regex.search(line):

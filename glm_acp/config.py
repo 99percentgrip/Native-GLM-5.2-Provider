@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL = "glm-5.2"
@@ -205,12 +208,105 @@ def models_for_plan(plan: str) -> dict[str, dict[str, Any]]:
 # "read" mode.
 DESTRUCTIVE_TOOLS = frozenset({"write_file", "edit_file", "run_command"})
 
+AUTH_METHOD_ID = "zai-api-key-setup"
+CONFIG_DIR_ENV = "GLM_ACP_CONFIG_DIR"
+CREDENTIALS_FILENAME = "credentials.json"
+
+
+def config_dir() -> Path:
+    """Return the per-user configuration directory without creating it."""
+    override = os.environ.get(CONFIG_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "glm-acp"
+    if sys_platform() == "darwin":
+        return Path.home() / "Library" / "Application Support" / "glm-acp"
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    return (
+        Path(xdg_config_home) / "glm-acp"
+        if xdg_config_home
+        else Path.home() / ".config" / "glm-acp"
+    )
+
+
+def sys_platform() -> str:
+    """Small indirection that keeps platform selection easy to test."""
+    import sys
+
+    return sys.platform
+
+
+def credentials_path() -> Path:
+    return config_dir() / CREDENTIALS_FILENAME
+
+
+def load_stored_api_key() -> str | None:
+    """Load the locally stored API key, returning None for invalid state."""
+    try:
+        payload = json.loads(credentials_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    key = payload.get("zai_api_key") if isinstance(payload, dict) else None
+    return key.strip() if isinstance(key, str) and key.strip() else None
+
+
+def store_api_key(key: str) -> Path:
+    """Atomically store an API key in a user-only configuration file."""
+    normalized = key.strip()
+    if not normalized:
+        raise ValueError("API key cannot be empty")
+
+    directory = config_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        directory.chmod(0o700)
+    except OSError:
+        pass
+
+    target = credentials_path()
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        dir=directory,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"zai_api_key": normalized}, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    return target
+
+
+def has_api_key() -> bool:
+    return bool(
+        os.environ.get("ZAI_API_KEY")
+        or os.environ.get("Z_AI_API_KEY")
+        or load_stored_api_key()
+    )
+
 
 def get_api_key() -> str:
-    key = os.environ.get("ZAI_API_KEY") or os.environ.get("Z_AI_API_KEY")
+    key = (
+        os.environ.get("ZAI_API_KEY")
+        or os.environ.get("Z_AI_API_KEY")
+        or load_stored_api_key()
+    )
     if not key:
         raise RuntimeError(
-            "ZAI_API_KEY environment variable is required. "
-            "Get your key at https://z.ai/"
+            "Z.ai API credentials are required. Run `glm-acp --setup` or set "
+            "ZAI_API_KEY. Get your key at https://z.ai/"
         )
     return key

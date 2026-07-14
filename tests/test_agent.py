@@ -47,8 +47,8 @@ class TestSystemPrompt:
         assert "Python project" in prompt
         assert "git" in prompt
 
-    def test_empty_dir(self):
-        prompt = build_system_prompt("/tmp")
+    def test_empty_dir(self, tmp_path):
+        prompt = build_system_prompt(str(tmp_path))
         assert "no project files" in prompt
 
     def test_contains_rules(self):
@@ -64,6 +64,8 @@ class TestSystemPrompt:
     def test_permission_denied_cwd(self, tmp_path):
         """Should not crash when cwd has no read permission (skipped if root)."""
         import os
+        if not hasattr(os, "geteuid"):
+            pytest.skip("Unix permission semantics are unavailable")
         if os.geteuid() == 0:
             pytest.skip("Cannot test permission denial as root")
         restricted = tmp_path / "restricted"
@@ -645,7 +647,30 @@ class TestInitialize:
     async def test_agent_info(self, agent):
         resp = await agent.initialize(1)
         assert resp.agent_info.name == "glm-acp"
-        assert resp.agent_info.title == "Z.ai GLM"
+        assert resp.agent_info.title == "Native Z.ai GLM"
+        assert resp.agent_info.version == "0.2.0"
+
+    @pytest.mark.asyncio
+    async def test_registry_terminal_auth_method(self, agent):
+        resp = await agent.initialize(1)
+        assert len(resp.auth_methods) == 1
+        method = resp.auth_methods[0]
+        assert method.id == "zai-api-key-setup"
+        assert method.type == "terminal"
+        assert method.args == ["--setup"]
+
+    @pytest.mark.asyncio
+    async def test_authenticate_requires_matching_method_and_credentials(
+        self, agent, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("GLM_ACP_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("Z_AI_API_KEY", raising=False)
+        assert await agent.authenticate("zai-api-key-setup") is None
+
+        monkeypatch.setenv("ZAI_API_KEY", "configured-secret")
+        assert await agent.authenticate("unknown") is None
+        assert await agent.authenticate("zai-api-key-setup") is not None
 
 
 # ============================================================

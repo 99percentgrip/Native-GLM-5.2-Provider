@@ -78,19 +78,32 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+- Public releases and ACP Registry metadata identify Aleksejs Kozlitins as author and use Apache-2.0.
+- Registry installation uses version-pinned frozen binaries for Linux, macOS x86-64, and Windows x86-64.
+- Terminal authentication must never echo or log `ZAI_API_KEY`; environment credentials take precedence over the user-only stored credential file.
+
 ## Project Purpose
 
 This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM models. It is a standalone Python package that Zed (or any ACP-compatible editor) launches as a subprocess over stdio. It wraps the Z.ai GLM Coding Plan API directly — not the generic openai_compatible wrapper — to unlock GLM's 1M context window, live reasoning traces, and long-running generation without stalls.
 
 - Language: Python 3.10+
 - Transport: ACP over stdio (JSON-RPC 2.0)
-- API: Z.ai GLM Coding Plan (`https://api.z.ai/api/coding/paas/v4`)
-- Models: GLM-5.2, GLM-5-Turbo, GLM-4.7 (only models supported by the Coding Plan)
-- Entry point: `python3 -m glm_acp`
+- APIs: Z.ai Coding Plan, Standard API, and BigModel (CN)
+- Models: GLM-5.2, GLM-5-Turbo, GLM-4.7, GLM-4.5V, and GLM-4.6V according to the selected API plan
+- Entry points: `glm-acp`, `python3 -m glm_acp`, and the frozen `native-glm-acp` executable
 
-## Install (binding)
+## Current Project Status
 
-The package MUST be installed into the venv that Zed launches:
+- Package and ACP implementation version is `0.2.0` from `glm_acp.__version__`.
+- Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
+- ACP initialization advertises Registry-compatible `zai-api-key-setup` Terminal Auth.
+- Terminal setup stores credentials atomically without echoing or logging the key; environment credentials take precedence.
+- GitHub Actions tests Python 3.10–3.13 and packages Linux, macOS x86-64, and Windows x86-64 binaries.
+- Tagged releases publish checksums, provenance attestations, Python distributions, Registry metadata, and the icon.
+
+## Install and distribution (binding)
+
+Source checkouts MUST install the package into the venv that Zed launches:
 
 ```bash
 cd /path/to/glm-acp
@@ -101,16 +114,39 @@ Without this, `python3 -m glm_acp` only resolves when run from this repo's
 directory (Python puts the cwd on `sys.path`). Zed sets the subprocess cwd
 to whatever project is open, so an uninstalled package crashes with
 `ModuleNotFoundError` (exit 1) in any other repository. A bare `git clone`
-is not enough — the install is required and must be re-run whenever the
-venv is recreated or the repo is cloned fresh.
+is not enough for source-based launches. Public Registry installs use the
+frozen `native-glm-acp` executable and do not require Python or a
+repository-specific virtualenv.
 
 Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: _editable_impl_glm_acp.pth  and  glm_acp-0.1.0.dist-info
+# expect: editable glm_acp metadata and glm_acp-0.2.0.dist-info
 ```
+
+## Verification
+
+```bash
+uv sync --frozen --extra dev
+uv run --frozen pytest tests/ -q
+uv run --frozen pip-audit
+uv build
+uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp glm_acp/launcher.py
+dist/native-glm-acp --version
+```
+
+Before Registry submission, also run the official Registry schema builder and
+authentication verifier against the published version-pinned archives.
 
 ## Child DOX Index
 
-- `glm_acp/` — The Python package implementing the ACP agent server. See `glm_acp/AGENTS.md`.
+| Path | Purpose | Ownership |
+|------|---------|-----------|
+| `glm_acp/` | Python ACP agent, GLM client, tools, configuration, and CLI | Python implementation |
+| `tests/` | Offline behavioral, security, packaging, and Registry verification | Python implementation |
+| `registry/` | ACP Registry manifest template and icon | Release engineering |
+| `.github/` | Cross-platform CI and release automation | Release engineering |
+| `pyproject.toml` | Package metadata, dependencies, entry point, and build configuration | Python implementation |
+| `uv.lock` | Reproducible dependency resolution | Python implementation |
+| `README.md` | Installation, operation, security, and release guide | Project maintainers |

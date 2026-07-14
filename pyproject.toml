@@ -4,16 +4,55 @@ build-backend = "hatchling.build"
 
 [project]
 name = "glm-acp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Native ACP agent server for Z.ai GLM models, optimized for Zed"
+readme = "README.md"
 requires-python = ">=3.10"
+authors = [
+    { name = "Aleksejs Kozlitins" },
+]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["acp", "zed", "zai", "glm", "coding-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+]
 dependencies = [
-    "agent-client-protocol>=0.0.2",
-    "httpx>=0.27",
+    "agent-client-protocol>=0.10.1,<0.11",
+    "httpx>=0.27,<1",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "build>=1.2,<2",
+    "pip-audit>=2.8,<3",
+    "pyinstaller>=6.14,<7",
+    "pytest>=8,<10",
+    "pytest-asyncio>=1,<2",
+    "ruff>=0.12,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/99percentgrip/Native-GLM-5.2-Provider"
+Repository = "https://github.com/99percentgrip/Native-GLM-5.2-Provider"
+Issues = "https://github.com/99percentgrip/Native-GLM-5.2-Provider/issues"
+
 [project.scripts]
-glm-acp = "glm_acp.__main__:main"
+glm-acp = "glm_acp.cli:main"
+
+[tool.hatch.version]
+path = "glm_acp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["glm_acp"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

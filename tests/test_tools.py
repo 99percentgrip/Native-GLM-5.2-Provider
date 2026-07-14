@@ -324,6 +324,14 @@ class TestToolEdgeCases:
 
 class TestBinaryFiles:
     @pytest.mark.asyncio
+    async def test_read_file_normalizes_crlf(self, tmp_path):
+        """Text reads preserve universal-newline behavior on every platform."""
+        (tmp_path / "lines.txt").write_bytes(b"first\r\nsecond\r\n")
+        sandbox = Sandbox(str(tmp_path))
+        result = await execute_tool("read_file", {"path": "lines.txt"}, sandbox)
+        assert result.output == "first\nsecond\n"
+
+    @pytest.mark.asyncio
     async def test_read_file_binary(self, tmp_path):
         """Reading a binary file should give a clear error, not crash."""
         from glm_acp.tools import ToolError

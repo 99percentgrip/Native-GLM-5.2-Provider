@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-compatibility:
+    name: Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+      - name: Run tests
+        run: uv run --frozen pytest tests/ -q
+
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+      - name: Check release-code formatting
+        run: uv run --frozen ruff format --check glm_acp/cli.py glm_acp/launcher.py tests/test_cli.py tests/test_registry_package.py
+      - name: Run fatal Python lint
+        run: uv run --frozen ruff check --select E9,F63,F7,F82 .
+      - name: Run tests
+        run: uv run --frozen pytest tests/ -q
+      - name: Audit Python dependencies
+        run: uv run --frozen pip-audit
+      - name: Build wheel and source distribution
+        run: uv build
+      - name: Verify isolated wheel installation
+        shell: bash
+        run: |
+          python -m venv /tmp/native-glm-wheel
+          /tmp/native-glm-wheel/bin/pip install dist/*.whl
+          test "$(/tmp/native-glm-wheel/bin/glm-acp --version)" = "$(uv run --frozen python -c 'from glm_acp import __version__; print(__version__)')"
+
+  platform:
+    name: Package ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            binary: dist/native-glm-acp
+          - os: macos-15-intel
+            target: darwin-x86_64
+            binary: dist/native-glm-acp
+          - os: windows-latest
+            target: windows-x86_64
+            binary: dist/native-glm-acp.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+      - name: Run tests
+        run: uv run --frozen pytest tests/ -q
+      - name: Build frozen executable
+        run: uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp glm_acp/launcher.py
+      - name: Verify frozen executable
+        shell: bash
+        run: test "$("${{ matrix.binary }}" --version)" = "$(uv run --frozen python -c 'from glm_acp import __version__; print(__version__)')"
+      - name: Enforce frozen executable size ceiling
+        run: python -c "from pathlib import Path; size=Path('${{ matrix.binary }}').stat().st_size; print(f'{size} bytes'); assert size < 30 * 1024 * 1024"
