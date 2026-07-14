@@ -82,6 +82,29 @@ def test_uninstall_removes_public_commands_path_and_custom_zed_entry(tmp_path):
     assert result.zed_backup.read_text(encoding="utf-8") == original_settings
 
 
+def test_uninstall_honors_installer_shell_profile_override(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    install_dir, native = _public_install(home)
+    profile = tmp_path / "custom-profile"
+    profile.write_text(
+        f'keep-this\n\n# Native GLM ACP\nexport PATH="{install_dir}:$PATH"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GLM_ACP_SHELL_PROFILE", str(profile))
+
+    result = uninstall_release(
+        executable=native,
+        install_dir=install_dir,
+        frozen=True,
+        platform_name="unix",
+        home=home,
+        zed_settings=tmp_path / "missing-settings.json",
+    )
+
+    assert result.profile_updated is True
+    assert profile.read_text(encoding="utf-8") == "keep-this\n\n"
+
+
 def test_uninstall_preserves_credentials_by_default(monkeypatch, tmp_path):
     home = tmp_path / "home"
     install_dir, native = _public_install(home)

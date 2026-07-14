@@ -46,7 +46,7 @@ must all route through `cli.main()`.
 ### Public-install removal
 
 - `glm-acp --uninstall` operates only from the user-local frozen-binary install directory; source and Registry-managed executables fail safely with guidance.
-- Removal deletes both public command aliases and only the exact PATH marker created by the installer.
+- Removal deletes both public command aliases and only the exact PATH marker created by the installer, including a profile selected through `GLM_ACP_SHELL_PROFILE`.
 - A matching custom `agent_servers.glm-acp` entry is removed from Zed JSONC only after a same-directory command match, with a sibling backup created first; Registry and unrelated entries remain untouched.
 - Stored credentials survive normal uninstall. `--uninstall --purge` removes only the credential file and does not delete sessions or other configuration.
 

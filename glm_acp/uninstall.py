@@ -250,7 +250,10 @@ def _default_zed_settings(home: Path, platform_name: str) -> Path:
 def _remove_unix_profile_path(home: Path, install_dir: Path) -> bool:
     marker = f'{PROFILE_MARKER}\nexport PATH="{install_dir}:$PATH"\n'
     changed = False
-    for profile in (home / ".profile", home / ".zprofile"):
+    profiles = [home / ".profile", home / ".zprofile"]
+    if override := os.environ.get("GLM_ACP_SHELL_PROFILE"):
+        profiles.insert(0, Path(override).expanduser())
+    for profile in dict.fromkeys(profiles):
         try:
             content = profile.read_text(encoding="utf-8")
         except FileNotFoundError:

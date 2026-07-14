@@ -96,8 +96,8 @@ This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM
 
 ## Current Project Status
 
-- Package and ACP implementation version is `0.6.0` from `glm_acp.__version__`.
-- GitHub release `v0.6.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `0.6.1` from `glm_acp.__version__`.
+- GitHub release `v0.6.1` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - Public frozen binaries support one-command removal of installer-owned commands, PATH markers, and matching custom Zed configuration with an automatic settings backup.
@@ -131,7 +131,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-0.6.0.dist-info
+# expect: editable glm_acp metadata and glm_acp-0.6.1.dist-info
 ```
 
 ## Verification
