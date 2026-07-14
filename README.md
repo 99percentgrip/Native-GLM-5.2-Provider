@@ -1,4 +1,8 @@
-# GLM-ACP
+# Native GLM ACP
+
+[![CI](https://github.com/99percentgrip/Native-GLM-5.2-Provider/actions/workflows/ci.yml/badge.svg)](https://github.com/99percentgrip/Native-GLM-5.2-Provider/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/99percentgrip/Native-GLM-5.2-Provider)](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A native Agent Client Protocol (ACP) server for Z.ai GLM models. Runs as a
 subprocess inside Zed's Agent Panel — no Zed recompilation required.
@@ -68,6 +72,34 @@ The system prompt auto-detects your project on session creation:
 
 ## Install
 
+### Release binary
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases),
+extract it, then run the one-time terminal setup:
+
+```bash
+./native-glm-acp --setup
+```
+
+The setup prompts without echoing the API key and stores it in a user-only
+configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
+environment variables take precedence over stored credentials.
+
+Default credential locations:
+
+- Linux: `~/.config/glm-acp/credentials.json`
+- macOS: `~/Library/Application Support/glm-acp/credentials.json`
+- Windows: `%APPDATA%\glm-acp\credentials.json`
+
+Set `GLM_ACP_CONFIG_DIR` to override the configuration directory. The key is
+never printed or written to logs.
+
+Configure the extracted executable as a custom Zed agent, or install it from
+the ACP Registry after the public submission is accepted.
+
+### Development installation
+
 The agent must be **installed into its virtualenv** so the `glm_acp`
 Python module resolves regardless of which directory Zed launches the
 subprocess from. A bare `git clone` is not enough — Zed sets the
@@ -96,12 +128,8 @@ add to `settings.json`:
   "agent_servers": {
     "glm-acp": {
       "type": "custom",
-      "command": "/path/to/glm-acp/.venv/bin/python3",
-      "args": ["-m", "glm_acp"],
-      "cwd": "/path/to/glm-acp",
-      "env": {
-        "ZAI_API_KEY": "your-api-key-here"
-      }
+      "command": "/path/to/native-glm-acp",
+      "args": []
     }
   }
 }
@@ -109,6 +137,10 @@ add to `settings.json`:
 
 Restart Zed, open the Agent Panel, and select **Z.ai GLM** from the agent
 dropdown.
+
+If you use the development installation instead, keep the Python command,
+`-m glm_acp` argument, working directory, and optional `ZAI_API_KEY` environment
+entry from the earlier setup style.
 
 ## Models
 
@@ -134,7 +166,9 @@ Vision model support requires Standard API or BigModel with sufficient balance.
 
 ```
 glm_acp/
-├── __main__.py      # Entry point — launches the ACP agent over stdio
+├── __main__.py      # Module entry point — routes through cli.main()
+├── cli.py           # Console entry point and terminal credential setup
+├── launcher.py      # Frozen-executable entry point
 ├── agent.py         # ACP agent: session lifecycle, prompt loop, slash commands
 ├── config.py        # Model registry, API endpoints, constants
 ├── glm_client.py    # Streaming Z.ai API client (SSE, retry, reasoning, tools)
@@ -194,6 +228,10 @@ cd /path/to/glm-acp
 .venv/bin/python3 -m pytest tests/ -v
 ```
 
+Release verification also builds the wheel, source distribution, and frozen
+PyInstaller executable. GitHub Actions runs the test suite and frozen-binary
+smoke test on Linux, macOS x86-64, and Windows x86-64.
+
 ## Troubleshooting
 
 ### Agent crashes on startup in other repos (exit 1, no error)
@@ -212,13 +250,13 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-0.1.0.dist-info  (and _editable_impl_glm_acp.pth)
+# expect: glm_acp-0.2.0.dist-info  (and editable-install metadata)
 ```
 
-### Agent crashes on startup (API key)
+### Agent reports missing API credentials
 
-Make sure `ZAI_API_KEY` is set in the agent server's `env` block in Zed's
-`settings.json`. Get a key at https://z.ai/.
+Run `native-glm-acp --setup` (or `glm-acp --setup` for a Python install), or
+set `ZAI_API_KEY` in the agent server's `env` block. Get a key at https://z.ai/.
 
 ### Vision models return content filter errors
 
@@ -233,4 +271,8 @@ errors persist, the model will receive the error and can inform the user.
 
 ## License
 
-Apache-2.0
+Apache-2.0. Copyright 2025 Aleksejs Kozlitins.
+
+## Author
+
+Created and maintained by **Aleksejs Kozlitins**.

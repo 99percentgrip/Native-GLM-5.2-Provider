@@ -19,6 +19,7 @@ import acp
 from acp.interfaces import Client
 from acp.schema import (
     AgentCapabilities,
+    AuthenticateResponse,
     CloseSessionResponse,
     ForkSessionResponse,
     Implementation,
@@ -43,11 +44,14 @@ from acp.schema import (
     SessionAdditionalDirectoriesCapabilities,
     SessionResumeCapabilities,
     SetSessionConfigOptionResponse,
+    TerminalAuthMethod,
     UsageUpdate,
 )
 
+from . import __version__
 from .config import (
     API_ENDPOINTS,
+    AUTH_METHOD_ID,
     COMPACTION_KEEP_RECENT,
     COMPACTION_THRESHOLD,
     CONTEXT_WINDOW_TOKENS,
@@ -57,6 +61,7 @@ from .config import (
     MODELS,
     THOUGHT_LEVELS,
     VISION_MODELS,
+    has_api_key,
     models_for_plan,
     thought_levels_for_model,
 )
@@ -303,10 +308,29 @@ class GlmAcpAgent(acp.Agent):
             ),
             agent_info=Implementation(
                 name="glm-acp",
-                title="Z.ai GLM",
-                version="0.1.0",
+                title="Native Z.ai GLM",
+                version=__version__,
             ),
+            auth_methods=[
+                TerminalAuthMethod(
+                    id=AUTH_METHOD_ID,
+                    name="Configure Z.ai API key",
+                    description=(
+                        "Open a terminal setup that stores the Z.ai API key "
+                        "for future Native GLM ACP sessions."
+                    ),
+                    type="terminal",
+                    args=["--setup"],
+                )
+            ],
         )
+
+    async def authenticate(
+        self, method_id: str, **kwargs: Any
+    ) -> AuthenticateResponse | None:
+        if method_id != AUTH_METHOD_ID or not has_api_key():
+            return None
+        return AuthenticateResponse()
 
     async def new_session(
         self,

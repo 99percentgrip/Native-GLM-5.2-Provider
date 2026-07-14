@@ -1,7 +1,6 @@
 """Entry point for the glm-acp command."""
 
-from .agent import run
+from .cli import main
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run())
+    main()

@@ -10,7 +10,9 @@ streaming, 1M context, and auto-continuation for long generations.
 
 ## Ownership
 
-- **Entry point**: `__main__.py` → `agent.py:run()`
+- **Entry point**: `__main__.py` → `cli.py:main()` → `agent.py:run()`
+- **CLI and terminal auth**: `cli.py` → `main()` / `configure_credentials()`
+- **Frozen executable entry**: `launcher.py` → absolute import of `cli.main()`
 - **ACP protocol**: `agent.py` — implements `acp.Agent` (initialize, new_session, load_session, resume_session, close_session, list_sessions, prompt, set_config_option, set_session_mode)
 - **GLM API client**: `glm_client.py` — SSE streaming, reasoning/content separation, tool_call assembly, auto-continuation
 - **Tools**: `tools.py` — file/shell operations sandboxed to workspace roots
@@ -22,9 +24,21 @@ streaming, 1M context, and auto-continuation for long generations.
 The agent is launched by Zed as `python3 -m glm_acp`. For `-m` to resolve
 the module from any cwd (not just this repo's directory), the package MUST
 be installed into the venv: `uv pip install -e .` from the repo root. See
-the root `AGENTS.md` "Install (binding)" section.
+the root `AGENTS.md` "Install and distribution (binding)" section.
+
+Public ACP Registry installs launch the frozen `native-glm-acp` executable
+instead. The `glm-acp` console script, `python -m glm_acp`, and frozen binary
+must all route through `cli.main()`.
 
 ## Local Contracts
+
+### Registry authentication
+
+- `initialize()` always advertises `zai-api-key-setup` as Terminal Auth with `args=["--setup"]`.
+- `--setup` prompts with hidden input and atomically stores credentials in a user-only file.
+- `ZAI_API_KEY` and `Z_AI_API_KEY` override stored credentials.
+- API keys must never appear in stdout, stderr, logs, test output, or ACP messages.
+- `authenticate()` succeeds only for the advertised method and configured credentials.
 
 ### Token stream routing
 
@@ -144,7 +158,7 @@ The server runs with `use_unstable_protocol=True` to expose
 ## Verification
 
 ```bash
-# Full test suite (247 tests)
+# Full test suite
 .venv/bin/python3 -m pytest tests/ -q
 
 # Import check
