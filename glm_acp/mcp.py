@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from . import __version__
 from .config import config_dir, get_api_key
 
 MCP_CONFIG_ENV = "GLM_ACP_MCP_CONFIG"
@@ -365,7 +366,7 @@ class McpManager:
                 {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "native-glm-acp", "version": "0.3"},
+                    "clientInfo": {"name": "native-glm-acp", "version": __version__},
                 },
             )
             await self._notify(server, "notifications/initialized")

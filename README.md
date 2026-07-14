@@ -105,7 +105,7 @@ servers reuse the existing API key without printing or persisting it.
 ### Release binary
 
 The current release is
-[v0.3.0](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases/tag/v0.3.0).
+[v0.4.0](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases/tag/v0.4.0).
 Download the archive for your platform from that release,
 extract it, then run the one-time terminal setup:
 
@@ -327,7 +327,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-0.3.0.dist-info  (and editable-install metadata)
+# expect: glm_acp-0.4.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials

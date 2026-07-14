@@ -771,7 +771,7 @@ class TestInitialize:
         resp = await agent.initialize(1)
         assert resp.agent_info.name == "glm-acp"
         assert resp.agent_info.title == "Native Z.ai GLM"
-        assert resp.agent_info.version == "0.3.0"
+        assert resp.agent_info.version == "0.4.0"
 
     @pytest.mark.asyncio
     async def test_registry_terminal_auth_method(self, agent):
