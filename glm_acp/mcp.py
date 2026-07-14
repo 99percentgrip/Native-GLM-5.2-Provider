@@ -166,6 +166,12 @@ class McpManager:
         self._discovered: dict[str, list[dict[str, Any]]] = {}
         self._stdio: dict[str, asyncio.subprocess.Process] = {}
         self._stdio_locks: dict[str, asyncio.Lock] = {}
+        self._init_locks: dict[str, asyncio.Lock] = {}
+
+    def _reset_protocol_state(self, server: str) -> None:
+        self._sessions.pop(server, None)
+        self._initialized.discard(server)
+        self._discovered.pop(server, None)
 
     def _server(self, name: str) -> dict[str, Any]:
         server = self.servers.get(name)
@@ -197,6 +203,9 @@ class McpManager:
         process = self._stdio.get(name)
         if process is not None and process.returncode is None:
             return process
+        if process is not None:
+            self._stdio.pop(name, None)
+            self._reset_protocol_state(name)
         server = self._server(name)
         command = str(server.get("command", ""))
         executable = shutil.which(command)
@@ -247,8 +256,17 @@ class McpManager:
                 try:
                     raw = await asyncio.wait_for(process.stdout.readline(), timeout=60)
                 except asyncio.TimeoutError as exc:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+                    self._stdio.pop(server, None)
+                    self._reset_protocol_state(server)
                     raise McpError(f"MCP server {server} timed out") from exc
                 if not raw:
+                    self._stdio.pop(server, None)
+                    self._reset_protocol_state(server)
                     raise McpError(f"MCP server {server} closed its connection")
                 try:
                     response = json.loads(raw)
@@ -337,21 +355,40 @@ class McpManager:
     async def _ensure_initialized(self, server: str) -> None:
         if server in self._initialized:
             return
-        await self._rpc(
-            server,
-            "initialize",
-            {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "native-glm-acp", "version": "0.3"},
-            },
-        )
-        await self._notify(server, "notifications/initialized")
-        self._initialized.add(server)
+        lock = self._init_locks.setdefault(server, asyncio.Lock())
+        async with lock:
+            if server in self._initialized:
+                return
+            await self._rpc(
+                server,
+                "initialize",
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "native-glm-acp", "version": "0.3"},
+                },
+            )
+            await self._notify(server, "notifications/initialized")
+            self._initialized.add(server)
+
+    @staticmethod
+    def _session_expired(error: McpError) -> bool:
+        message = str(error)
+        return "MCP HTTP error 404" in message or "MCP HTTP error 410" in message
+
+    async def _rpc_with_reconnect(self, server: str, method: str, params: dict[str, Any]) -> Any:
+        try:
+            return await self._rpc(server, method, params)
+        except McpError as error:
+            if self._server(server).get("type") == "stdio" or not self._session_expired(error):
+                raise
+            self._reset_protocol_state(server)
+            await self._ensure_initialized(server)
+            return await self._rpc(server, method, params)
 
     async def list_tools(self, server: str) -> list[dict[str, Any]]:
         await self._ensure_initialized(server)
-        result = await self._rpc(server, "tools/list", {})
+        result = await self._rpc_with_reconnect(server, "tools/list", {})
         tools = result.get("tools", []) if isinstance(result, dict) else []
         normalized = tools if isinstance(tools, list) else []
         self._discovered[server] = normalized
@@ -382,7 +419,9 @@ class McpManager:
         remapped = dict(arguments)
         if "query" in remapped and "query" not in properties and "search_query" in properties:
             remapped["search_query"] = remapped.pop("query")
-        return await self._rpc(server, "tools/call", {"name": resolved, "arguments": remapped})
+        return await self._rpc_with_reconnect(
+            server, "tools/call", {"name": resolved, "arguments": remapped}
+        )
 
     async def invoke_preset(self, name: str, arguments: dict[str, Any]) -> Any:
         """Invoke a first-party Z.ai MCP capability with a stable ACP schema."""
@@ -413,3 +452,8 @@ class McpManager:
                     process.kill()
                     await process.wait()
         self._stdio.clear()
+        self._sessions.clear()
+        self._initialized.clear()
+        self._discovered.clear()
+        self._stdio_locks.clear()
+        self._init_locks.clear()

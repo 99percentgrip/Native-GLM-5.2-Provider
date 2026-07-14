@@ -12,6 +12,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_registry_package.py` covers public Registry identity and release URL invariants.
 - Remaining modules cover tools, sessions, streaming, compaction, and GLM HTTP behavior.
 - `test_mcp.py` and `test_memory.py` cover remote MCP protocol handling and opt-in project memory.
+- `test_quality.py` covers tool-loop recovery, malformed calls, benchmark/report contracts, million-token estimation, and real stdio/SDK ACP process lifecycles.
 
 ## Local Contracts
 
@@ -23,6 +24,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
   delta coalescing, continuation caps, and exact Deep High/Max request fields.
 - Tool tests must cover output bounds and make command exit status observable.
 - Persistence tests must verify metadata-sidecar listing and deletion behavior.
+- Process-level ACP tests must use test credentials, isolated HOME state, and the official SDK lifecycle helpers where available.
 
 ## Work Guidance
 

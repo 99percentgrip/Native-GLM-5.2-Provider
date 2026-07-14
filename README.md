@@ -25,6 +25,8 @@ subprocess inside Zed's Agent Panel — no Zed recompilation required.
 - **Cost and cache tracking** — cumulative input/output/cached tokens per session, shown in `/status`
 - **Real cancellation** — the Cancel button actually aborts in-flight API requests
 - **Token estimation** — calibrated 3.5 chars/token heuristic, handles vision content blocks
+- **Tool-loop recovery** — repeated identical tool batches are interrupted with corrective feedback
+- **MCP recovery** — expired HTTP sessions and restarted stdio servers reinitialize automatically
 
 ### Chat Dropdown Config Options
 
@@ -261,7 +263,7 @@ preserved-thinking requests.
 | `list_directory` | List directory entries |
 | `search_files` | Glob pattern search (`.gitignore`-aware) |
 | `grep` | Regex content search (`.gitignore`-aware) |
-| `run_command` | Live, bounded shell output; timeouts kill the process tree |
+| `run_command` | Live, bounded shell output; timeouts kill the process tree; inherited credentials are removed |
 | `update_plan` | Create/update the task plan checklist |
 | `recall_memory` / `store_memory` | Read or permission-gate durable project knowledge |
 | `web_search` / `web_reader` | Official Z.ai Coding Plan MCP services |
@@ -286,12 +288,26 @@ Opt-in live quality evaluation uses isolated fixtures and objective test results
 
 ```bash
 .venv/bin/python3 benchmarks/eval.py --list
-.venv/bin/python3 benchmarks/eval.py --runner native
+.venv/bin/python3 benchmarks/eval.py --validate
+.venv/bin/python3 benchmarks/eval.py --runner native --repeat 3 \
+  --label native-glm-acp --output quality/native.json
 ```
 
-An external agent can be compared on the same corpus with `--runner external
---external-command <command...>`; the prompt is sent on stdin and no credential
-or reasoning data is included in the JSON report.
+The catalog covers Python, TypeScript, Go, and Rust tasks including multi-file
+changes, async cleanup, nested instructions, path security, and CLI behavior.
+An external agent can run the same corpus with `--runner external
+--external-command <command...>`. Generate a comparison table with:
+
+```bash
+.venv/bin/python3 benchmarks/report.py quality/native.json quality/competitor.json \
+  --output quality/report.md
+```
+
+Reports contain outcome, latency, token totals, candidate version/model, and a
+system-prompt fingerprint. They exclude credentials, reasoning traces,
+authentication paths, and session IDs. The manually triggered **Quality
+benchmark** GitHub workflow provides an opt-in native run and job-summary
+dashboard; it never runs live API usage on ordinary CI or pull requests.
 
 ## Troubleshooting
 

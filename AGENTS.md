@@ -103,6 +103,9 @@ This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM
 - GitHub Actions tests Python 3.10–3.13 and packages Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64 binaries.
 - Official Z.ai Web Search, Web Reader, and optional local Vision MCP capabilities are exposed alongside configurable MCP servers.
 - Root project instructions and permission-gated `.glm-acp/memory.md` knowledge are loaded into model context.
+- Repeated identical tool batches are interrupted before the 50-iteration ceiling, malformed JSON arguments receive corrective feedback, and shell tools do not inherit common credential environment variables.
+- Expired MCP HTTP sessions and restarted stdio servers reinitialize automatically with per-server initialization locking.
+- The opt-in quality harness provides 11 outcome-based Python, TypeScript, Go, and Rust cases plus comparable JSON and Markdown reports; live runs remain outside ordinary CI.
 
 ## Install and distribution (binding)
 

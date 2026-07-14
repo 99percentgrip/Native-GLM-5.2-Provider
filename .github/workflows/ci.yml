@@ -50,6 +50,8 @@ jobs:
         run: uv run --frozen ruff format --check glm_acp/cli.py glm_acp/launcher.py tests/test_cli.py tests/test_registry_package.py
       - name: Run fatal Python lint
         run: uv run --frozen ruff check --select E9,F63,F7,F82 .
+      - name: Validate quality benchmark catalog
+        run: uv run --frozen python benchmarks/eval.py --validate
       - name: Run tests
         run: uv run --frozen pytest tests/ -q
       - name: Audit Python dependencies

@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,13 +20,36 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+REQUIRED_CASE_FIELDS = {"id", "prompt", "files", "verify", "timeout"}
+
+
 def load_cases() -> list[dict[str, Any]]:
-    return json.loads((Path(__file__).with_name("cases.json")).read_text(encoding="utf-8"))
+    cases = json.loads((Path(__file__).with_name("cases.json")).read_text(encoding="utf-8"))
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("cases.json must contain a non-empty list")
+    seen: set[str] = set()
+    for case in cases:
+        missing = REQUIRED_CASE_FIELDS - set(case)
+        if missing:
+            raise ValueError(f"benchmark case is missing fields: {sorted(missing)}")
+        case_id = case["id"]
+        if not isinstance(case_id, str) or not case_id or case_id in seen:
+            raise ValueError(f"benchmark case id is invalid or duplicated: {case_id!r}")
+        seen.add(case_id)
+        if not isinstance(case["files"], dict) or not case["files"]:
+            raise ValueError(f"benchmark case {case_id} must define fixture files")
+        if not isinstance(case["verify"], list) or not case["verify"]:
+            raise ValueError(f"benchmark case {case_id} must define a verification command")
+    return cases
 
 
 def prepare(case: dict[str, Any], root: Path) -> None:
     for relative, content in case["files"].items():
-        path = root / relative
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root.resolve())
+        except ValueError as error:
+            raise ValueError(f"benchmark fixture escapes workspace: {relative}") from error
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
@@ -51,9 +77,18 @@ async def run_native(case: dict[str, Any], root: Path) -> dict[str, Any]:
     started = time.perf_counter()
     timing["started"] = started
     try:
-        stop_reason = await asyncio.wait_for(
-            agent._run_turn(session), timeout=float(case["timeout"])
-        )
+        try:
+            stop_reason = await asyncio.wait_for(
+                agent._run_turn(session), timeout=float(case["timeout"])
+            )
+        except asyncio.TimeoutError:
+            return {"stop_reason": "timeout", "elapsed_seconds": float(case["timeout"])}
+        except Exception as error:
+            return {
+                "stop_reason": "runner_error",
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "error_type": type(error).__name__,
+            }
         return {
             "stop_reason": stop_reason,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -96,14 +131,44 @@ def verify(case: dict[str, Any], root: Path) -> dict[str, Any]:
     command = list(case["verify"])
     if command and command[0] == "python":
         command[0] = sys.executable
-    result = subprocess.run(
-        command, cwd=root, capture_output=True, text=True, timeout=60, check=False
-    )
+    elif command and shutil.which(command[0]) is None:
+        return {
+            "passed": False,
+            "skipped": True,
+            "exit_code": None,
+            "summary": f"required executable is unavailable: {command[0]}",
+        }
+    try:
+        result = subprocess.run(
+            command, cwd=root, capture_output=True, text=True, timeout=60, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "passed": False,
+            "exit_code": None,
+            "summary": "verification timed out after 60 seconds",
+        }
     return {
         "passed": result.returncode == 0,
         "exit_code": result.returncode,
-        "summary": (result.stdout + result.stderr)[-1000:],
+        "summary": redact((result.stdout + result.stderr)[-1000:]),
     }
+
+
+def redact(text: str) -> str:
+    """Remove known credential values from any persisted benchmark output."""
+    redacted = text
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if (
+            value
+            and len(value) >= 8
+            and any(
+                marker in upper for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+            )
+        ):
+            redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
 
 
 async def main() -> int:
@@ -112,35 +177,87 @@ async def main() -> int:
     parser.add_argument("--runner", choices=("native", "external"), default="native")
     parser.add_argument("--external-command", nargs=argparse.REMAINDER)
     parser.add_argument("--case", action="append", dest="selected")
+    parser.add_argument("--label", default="native-glm-acp")
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--validate", action="store_true")
     args = parser.parse_args()
     cases = load_cases()
+    if args.validate:
+        print(f"Validated {len(cases)} benchmark cases")
+        return 0
+    if args.repeat < 1 or args.repeat > 20:
+        parser.error("--repeat must be between 1 and 20")
     if args.list:
         for case in cases:
             print(case["id"])
         return 0
     if args.runner == "external" and not args.external_command:
         parser.error("--external-command is required for an external runner")
+    if args.runner == "native":
+        from glm_acp.config import has_api_key
+
+        if not has_api_key():
+            print(
+                "Native benchmark requires configured Z.ai credentials. "
+                "Run `glm-acp --setup` or set ZAI_API_KEY.",
+                file=sys.stderr,
+            )
+            return 2
     selected = set(args.selected or [])
     results = []
-    for case in cases:
-        if selected and case["id"] not in selected:
-            continue
-        with tempfile.TemporaryDirectory(prefix=f"glm-eval-{case['id']}-") as temp:
-            workspace = Path(temp)
-            prepare(case, workspace)
-            if args.runner == "native":
-                run = await run_native(case, workspace)
-            else:
-                run = await run_external(args.external_command, case, workspace)
-            results.append({"id": case["id"], **run, "verification": verify(case, workspace)})
+    for attempt in range(1, args.repeat + 1):
+        for case in cases:
+            if selected and case["id"] not in selected:
+                continue
+            with tempfile.TemporaryDirectory(prefix=f"glm-eval-{case['id']}-") as temp:
+                workspace = Path(temp)
+                prepare(case, workspace)
+                if args.runner == "native":
+                    run = await run_native(case, workspace)
+                else:
+                    run = await run_external(args.external_command, case, workspace)
+                results.append(
+                    {
+                        "id": case["id"],
+                        "attempt": attempt,
+                        **run,
+                        "verification": verify(case, workspace),
+                    }
+                )
+    scored = [item for item in results if not item["verification"].get("skipped")]
+    passed = sum(bool(item["verification"]["passed"]) for item in scored)
+    candidate: dict[str, str] = {}
+    if args.runner == "native":
+        from glm_acp import __version__
+        from glm_acp.agent import SYSTEM_PROMPT_TEMPLATE
+        from glm_acp.config import DEFAULT_MODEL
+
+        candidate = {
+            "package_version": __version__,
+            "model": DEFAULT_MODEL,
+            "system_prompt_sha256": hashlib.sha256(
+                SYSTEM_PROMPT_TEMPLATE.encode("utf-8")
+            ).hexdigest(),
+        }
     report = {
+        "schema_version": 1,
+        "label": args.label,
         "runner": args.runner,
-        "passed": sum(bool(item["verification"]["passed"]) for item in results),
-        "total": len(results),
+        "candidate": candidate,
+        "repeat": args.repeat,
+        "passed": passed,
+        "total": len(scored),
+        "skipped": len(results) - len(scored),
+        "pass_rate": round(passed / len(scored), 4) if scored else 0.0,
         "results": results,
     }
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-    return 0 if report["passed"] == report["total"] else 1
+    rendered = json.dumps(report, indent=2, ensure_ascii=False)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
+    return 0 if report["passed"] == report["total"] and report["total"] else 1
 
 
 if __name__ == "__main__":

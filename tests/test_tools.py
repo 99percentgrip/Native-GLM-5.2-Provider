@@ -8,10 +8,25 @@ from glm_acp.tools import (
     Sandbox,
     ToolError,
     ToolResult,
+    _command_environment,
     _is_ignored,
     _load_gitignore_patterns,
     execute_tool,
 )
+
+
+def test_command_environment_removes_inherited_credentials(monkeypatch):
+    monkeypatch.setenv("ZAI_API_KEY", "provider-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    monkeypatch.setenv("DOCS_API_TOKEN", "docs-secret")
+    monkeypatch.setenv("SAFE_SETTING", "visible")
+
+    environment = _command_environment()
+
+    assert environment["SAFE_SETTING"] == "visible"
+    assert "ZAI_API_KEY" not in environment
+    assert "GITHUB_TOKEN" not in environment
+    assert "DOCS_API_TOKEN" not in environment
 
 
 class TestSandbox:

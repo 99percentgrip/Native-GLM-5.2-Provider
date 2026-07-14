@@ -31,12 +31,40 @@ _ALWAYS_IGNORE = [
     "build",
     ".eggs",
 ]
+_SENSITIVE_ENV_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_CREDENTIAL",
+    "_PRIVATE_KEY",
+    "_ACCESS_KEY",
+)
+_SENSITIVE_ENV_NAMES = {
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "SSH_AUTH_SOCK",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+}
 
 
 def _bounded_output(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... (truncated at {limit} characters)"
+
+
+def _command_environment() -> dict[str, str]:
+    """Build a useful shell environment without exposing inherited credentials."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in _SENSITIVE_ENV_NAMES
+        and not key.upper().endswith(_SENSITIVE_ENV_SUFFIXES)
+    }
 
 
 def _run_rg(args: list[str], root: Path) -> str | None:
@@ -728,6 +756,7 @@ async def _run_command(args: dict[str, Any], sandbox: Sandbox, on_output: Any = 
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(sandbox.roots[0]),
+        env=_command_environment(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **process_kwargs,

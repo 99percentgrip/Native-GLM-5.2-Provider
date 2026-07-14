@@ -160,7 +160,15 @@ same model batch may execute concurrently, while edits and commands remain
 ordered. Tool and embedded-resource output is bounded; truncated file reads
 include a `start_line` continuation hint. Command output streams live, final
 results include the exit code and bounded stdout/stderr, and timeouts terminate
-the complete process group.
+the complete process group. Child commands receive normal runtime variables but
+not common inherited API keys, tokens, passwords, secrets, private/access keys,
+credentials, or SSH agent access.
+
+Within one model turn, three consecutive identical tool-call batches trigger a
+synthetic recovery result. If the model repeats the batch again, the turn stops
+instead of consuming the full iteration budget. Malformed JSON tool arguments
+are rejected with schema-oriented corrective feedback before permission or
+execution.
 
 ### MCP and durable memory
 
@@ -168,6 +176,9 @@ Z.ai Search and Reader use authenticated Streamable HTTP MCP. Vision uses the
 official optional `@z_ai/mcp-server@latest` stdio server and therefore requires
 Node.js 22+; starting it is permission-gated. Custom MCP servers come from the
 user-only `mcp.json` and may reference environment variables for headers.
+Concurrent MCP discovery initializes each server once. HTTP 404/410 session
+expiry performs one clean reinitialize-and-retry, while dead or timed-out stdio
+processes discard stale protocol state before restart.
 
 Root `AGENTS.md`, `CLAUDE.md`, and `GLM.md` are loaded into the managed system
 prompt. Reusable knowledge is opt-in and stored only after permission in the

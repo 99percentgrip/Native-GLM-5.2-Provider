@@ -60,6 +60,8 @@ from .config import (
     DEFAULT_MODEL,
     DESTRUCTIVE_TOOLS,
     GENERATION_PROFILES,
+    MAX_REPEATED_TOOL_BATCHES,
+    MAX_TOOL_ITERATIONS,
     MODELS,
     THOUGHT_LEVELS,
     VISION_MODELS,
@@ -931,6 +933,29 @@ class GlmAcpAgent(acp.Agent):
             session.client.cancel()
             logger.info("Cancellation requested for session %s", session_id)
 
+    @staticmethod
+    def _tool_batch_signature(tool_calls: list[dict[str, Any]]) -> str:
+        """Return a stable signature that ignores provider-generated call IDs."""
+        normalized = [
+            {
+                "name": call.get("function", {}).get("name", ""),
+                "arguments": call.get("function", {}).get("arguments", {}),
+            }
+            for call in tool_calls
+        ]
+        return json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
+
+    @staticmethod
+    def _tool_arguments_issue(arguments: Any) -> str | None:
+        if not isinstance(arguments, dict):
+            return "Tool arguments must be a JSON object. Correct the call and try again."
+        if "_raw" in arguments:
+            return (
+                "Tool arguments contained malformed JSON. Send a valid JSON object using "
+                "the tool schema; do not repeat the malformed call."
+            )
+        return None
+
     async def _run_turn(self, session: Session) -> str:
         """Execute the full model-turn loop: stream → tool calls → repeat."""
         client = self._client_for_session(session)
@@ -957,7 +982,10 @@ class GlmAcpAgent(acp.Agent):
             ]
         )
 
-        for turn_iter in range(50):
+        previous_tool_batch = ""
+        repeated_tool_batches = 0
+
+        for turn_iter in range(MAX_TOOL_ITERATIONS):
             # --- Check for cancellation ---
             if client.cancelled:
                 await self._send_message(
@@ -980,6 +1008,53 @@ class GlmAcpAgent(acp.Agent):
             # --- Update token estimates and notify Zed ---
             self._update_usage(session, result.usage)
             await self._report_usage(session)
+
+            if result.tool_calls:
+                tool_batch = self._tool_batch_signature(result.tool_calls)
+                if tool_batch == previous_tool_batch:
+                    repeated_tool_batches += 1
+                else:
+                    previous_tool_batch = tool_batch
+                    repeated_tool_batches = 1
+
+                if repeated_tool_batches >= MAX_REPEATED_TOOL_BATCHES:
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": result.content or None,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["function"]["name"],
+                                    "arguments": json.dumps(tc["function"]["arguments"]),
+                                },
+                            }
+                            for tc in result.tool_calls
+                        ],
+                    }
+                    if getattr(client, "preserve_thinking", False) and result.reasoning:
+                        assistant_msg["reasoning_content"] = result.reasoning
+                    session.messages.append(assistant_msg)
+                    recovery = (
+                        "Tool-loop recovery: this exact tool batch was requested "
+                        f"{repeated_tool_batches} consecutive times. Inspect prior tool "
+                        "results, change the approach, or explain what blocks progress."
+                    )
+                    for tc in result.tool_calls:
+                        await self._fail_tool(session.id, tc["id"], recovery)
+                        session.messages.append(
+                            {"role": "tool", "tool_call_id": tc["id"], "content": recovery}
+                        )
+                    if repeated_tool_batches > MAX_REPEATED_TOOL_BATCHES:
+                        await self._send_message(
+                            session.id,
+                            "\n\n⚠️ **Stopped a repeated tool-call loop.** "
+                            "Review the last tool result and try a different approach.\n",
+                        )
+                        logger.warning("Turn ended: repeated tool batch did not recover")
+                        return "end_turn"
+                    continue
 
             if result.reasoning and not result.content:
                 pass
@@ -1034,6 +1109,9 @@ class GlmAcpAgent(acp.Agent):
                     await self._update_tool(session.id, tc["id"], status="in_progress")
 
                 async def execute_read(tc: dict[str, Any]):
+                    issue = self._tool_arguments_issue(tc["function"]["arguments"])
+                    if issue:
+                        raise ToolError(issue)
                     async with self._tool_io_semaphore:
                         return await execute_tool(
                             tc["function"]["name"],
@@ -1066,6 +1144,18 @@ class GlmAcpAgent(acp.Agent):
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
                 tc_id = tc["id"]
+
+                arguments_issue = self._tool_arguments_issue(tool_args)
+                if arguments_issue:
+                    await self._fail_tool(session.id, tc_id, arguments_issue)
+                    session.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"Error: {arguments_issue}",
+                        }
+                    )
+                    continue
 
                 # --- Plan tool: handled in-agent, not via sandbox ---
                 if tool_name == "update_plan":
@@ -1165,14 +1255,15 @@ class GlmAcpAgent(acp.Agent):
                     }
                 )
         else:
-            # Loop exhausted without break — hit the 50-iteration cap
+            # Loop exhausted without break — hit the configured iteration cap
             await self._send_message(
                 session.id,
-                "\n\n⚠️ **Reached the maximum number of tool-call iterations (50).** "
+                "\n\n⚠️ **Reached the maximum number of tool-call iterations "
+                f"({MAX_TOOL_ITERATIONS}).** "
                 "The conversation will continue, but the current task may be incomplete. "
                 "Ask me to continue if needed.\n",
             )
-            logger.warning("Turn ended: 50-iteration limit reached")
+            logger.warning("Turn ended: %d-iteration limit reached", MAX_TOOL_ITERATIONS)
 
         return "end_turn"
 

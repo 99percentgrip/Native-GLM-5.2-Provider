@@ -28,5 +28,88 @@
     },
     "verify": ["python", "-m", "pytest", "-q"],
     "timeout": 180
+  },
+  {
+    "id": "multi-file-regression",
+    "prompt": "Fix the order total regression. Apply discounts before tax, preserve the public API, and add or update tests. Inspect all project files before editing.",
+    "files": {
+      "shop/order.py": "from shop.pricing import discounted\n\ndef total(subtotal: float, discount: float, tax_rate: float) -> float:\n    return discounted(subtotal * (1 + tax_rate), discount)\n",
+      "shop/pricing.py": "def discounted(amount: float, discount: float) -> float:\n    return amount * (1 - discount)\n",
+      "test_order.py": "from shop.order import total\n\ndef test_discount_precedes_tax():\n    assert total(100, 0.20, 0.10) == 88\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 240
+  },
+  {
+    "id": "async-resource-cleanup",
+    "prompt": "Fix client.py so fetch_all always closes the client, including when one request fails, without serializing the requests. Preserve the function signature.",
+    "files": {
+      "client.py": "import asyncio\n\nasync def fetch_all(client, urls):\n    return await asyncio.gather(*(client.get(url) for url in urls))\n",
+      "test_client.py": "import asyncio\nimport pytest\nfrom client import fetch_all\n\nclass Client:\n    def __init__(self): self.closed = False\n    async def get(self, url):\n        await asyncio.sleep(0)\n        if url == 'bad': raise RuntimeError('boom')\n        return url\n    async def aclose(self): self.closed = True\n\ndef test_success_closes():\n    c = Client(); assert asyncio.run(fetch_all(c, ['a', 'b'])) == ['a', 'b']; assert c.closed\n\ndef test_failure_closes():\n    c = Client()\n    with pytest.raises(RuntimeError): asyncio.run(fetch_all(c, ['a', 'bad']))\n    assert c.closed\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 240
+  },
+  {
+    "id": "nested-instructions",
+    "prompt": "Implement package/normalize.py so the tests pass. Follow every applicable AGENTS.md and do not change the tests.",
+    "files": {
+      "AGENTS.md": "# Root contract\nDo not add dependencies.\n",
+      "package/AGENTS.md": "# Package contract\nnormalize must reject non-string values with TypeError. Preserve internal whitespace and remove only surrounding whitespace.\n",
+      "package/test_normalize.py": "import pytest\nfrom package.normalize import normalize\n\ndef test_text(): assert normalize('  a  b  ') == 'a  b'\ndef test_type():\n    with pytest.raises(TypeError): normalize(1)\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 180
+  },
+  {
+    "id": "safe-path-join",
+    "prompt": "Implement safe_join in paths.py. It must return a resolved path inside root and reject absolute paths, parent traversal, and symlink escapes with ValueError.",
+    "files": {
+      "paths.py": "from pathlib import Path\n\ndef safe_join(root: Path, user_path: str) -> Path:\n    raise NotImplementedError\n",
+      "test_paths.py": "from pathlib import Path\nimport pytest\nfrom paths import safe_join\n\ndef test_child(tmp_path): assert safe_join(tmp_path, 'a/b') == (tmp_path/'a/b').resolve()\ndef test_parent(tmp_path):\n    with pytest.raises(ValueError): safe_join(tmp_path, '../escape')\ndef test_absolute(tmp_path):\n    with pytest.raises(ValueError): safe_join(tmp_path, '/etc/passwd')\ndef test_symlink(tmp_path):\n    outside = tmp_path.parent / 'outside'; outside.mkdir(exist_ok=True)\n    (tmp_path/'link').symlink_to(outside, target_is_directory=True)\n    with pytest.raises(ValueError): safe_join(tmp_path, 'link/file')\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 240
+  },
+  {
+    "id": "cli-contract",
+    "prompt": "Complete the CLI implementation. --json must emit exactly one JSON object, invalid names must exit 2 without a traceback, and normal output must remain unchanged.",
+    "files": {
+      "hello.py": "import argparse\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser()\n    parser.add_argument('name')\n    parser.add_argument('--json', action='store_true')\n    args = parser.parse_args(argv)\n    print(f'Hello, {args.name}!')\n    return 0\n\nif __name__ == '__main__': raise SystemExit(main())\n",
+      "test_hello.py": "import json, subprocess, sys\n\ndef run(*args): return subprocess.run([sys.executable, 'hello.py', *args], text=True, capture_output=True)\ndef test_normal(): assert run('Ada').stdout == 'Hello, Ada!\\n'\ndef test_json(): assert json.loads(run('--json', 'Ada').stdout) == {'message': 'Hello, Ada!'}\ndef test_invalid():\n    result = run('   '); assert result.returncode == 2; assert 'Traceback' not in result.stderr\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 240
+  },
+  {
+    "id": "typescript-cache",
+    "prompt": "Fix cache.mjs so getOrLoad deduplicates concurrent loads, caches successful values, and never caches failures. Do not add dependencies.",
+    "files": {
+      "cache.mjs": "const cache = new Map();\nexport async function getOrLoad(key, loader) {\n  if (cache.has(key)) return cache.get(key);\n  const value = await loader();\n  cache.set(key, value);\n  return value;\n}\nexport function clear() { cache.clear(); }\n",
+      "cache.test.mjs": "import test from 'node:test'; import assert from 'node:assert/strict';\nimport {getOrLoad, clear} from './cache.mjs';\ntest('deduplicates', async () => { clear(); let calls=0; const load=async()=>{calls++; await new Promise(r=>setTimeout(r,10)); return 7}; assert.deepEqual(await Promise.all([getOrLoad('x',load),getOrLoad('x',load)]),[7,7]); assert.equal(calls,1); });\ntest('retries failures', async () => { clear(); let calls=0; const load=async()=>{calls++; if(calls===1) throw Error('x'); return 9}; await assert.rejects(getOrLoad('x',load)); assert.equal(await getOrLoad('x',load),9); });\n"
+    },
+    "verify": ["node", "--test", "cache.test.mjs"],
+    "timeout": 240
+  },
+  {
+    "id": "go-table-fix",
+    "prompt": "Fix ParsePort so it trims whitespace, accepts ports 1 through 65535, and returns an error for all other inputs. Keep the API unchanged.",
+    "files": {
+      "go.mod": "module example.com/ports\n\ngo 1.22\n",
+      "port.go": "package ports\nimport \"strconv\"\nfunc ParsePort(raw string) (int, error) { return strconv.Atoi(raw) }\n",
+      "port_test.go": "package ports\nimport \"testing\"\nfunc TestValid(t *testing.T){ p,e:=ParsePort(\" 443 \"); if e!=nil||p!=443{t.Fatal(p,e)} }\nfunc TestInvalid(t *testing.T){ for _,v:=range []string{\"0\",\"65536\",\"x\"}{if _,e:=ParsePort(v);e==nil{t.Fatal(v)}} }\n"
+    },
+    "verify": ["go", "test", "./..."],
+    "timeout": 240
+  },
+  {
+    "id": "rust-state-machine",
+    "prompt": "Implement Job::transition so only queued->running and running->finished are accepted. Invalid transitions must leave state unchanged and return false.",
+    "files": {
+      "Cargo.toml": "[package]\nname='state_case'\nversion='0.1.0'\nedition='2021'\n",
+      "src/lib.rs": "#[derive(Clone,Copy,Debug,PartialEq)] pub enum State { Queued, Running, Finished }\npub struct Job { pub state: State }\nimpl Job { pub fn transition(&mut self, next: State) -> bool { self.state=next; true } }\n#[cfg(test)] mod tests { use super::*; #[test] fn valid(){let mut j=Job{state:State::Queued};assert!(j.transition(State::Running));assert!(j.transition(State::Finished));} #[test] fn invalid(){let mut j=Job{state:State::Queued};assert!(!j.transition(State::Finished));assert_eq!(j.state,State::Queued);} }\n"
+    },
+    "verify": ["cargo", "test", "--quiet"],
+    "timeout": 300
   }
 ]
