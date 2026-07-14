@@ -57,7 +57,7 @@ try {
     }
 
     $installedVersion = & (Join-Path $InstallDir "native-glm-acp.exe") --version
-    Write-Host "Installed Native GLM ACP $installedVersion:"
+    Write-Host "Installed Native GLM ACP ${installedVersion}:"
     Write-Host "  $(Join-Path $InstallDir 'native-glm-acp.exe')"
     Write-Host "  $(Join-Path $InstallDir 'glm-acp.exe')"
     Write-Host ""

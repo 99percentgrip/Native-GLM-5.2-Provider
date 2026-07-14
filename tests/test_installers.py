@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
 import shutil
 import subprocess
 import tarfile
@@ -20,7 +21,10 @@ def _fake_unix_release(tmp_path: Path, checksum: str | None = None) -> Path:
     executable = tmp_path / "native-glm-acp"
     executable.write_text("#!/bin/sh\nprintf '0.5.0\\n'\n", encoding="utf-8")
     executable.chmod(0o755)
-    asset = download / "native-glm-acp-linux-x86_64.tar.gz"
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    architecture = "aarch64" if machine in {"arm64", "aarch64"} else "x86_64"
+    asset = download / f"native-glm-acp-{system}-{architecture}.tar.gz"
     with tarfile.open(asset, "w:gz") as archive:
         archive.add(executable, arcname="native-glm-acp")
     digest = checksum or hashlib.sha256(asset.read_bytes()).hexdigest()
