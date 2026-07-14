@@ -101,12 +101,14 @@ class TestSessionSerialization:
             "thought_level",
             "mode",
             "api_endpoint",
+            "generation_profile",
             "title",
             "permission_mode",
             "plan",
             "messages",
             "total_input_tokens",
             "total_output_tokens",
+            "total_cached_tokens",
             "estimated_tokens",
         ]:
             assert field in d, f"Missing field: {field}"
@@ -117,6 +119,7 @@ class TestSessionSerialization:
         session.plan = [{"content": "task", "status": "pending", "priority": "high"}]
         session.total_input_tokens = 5000
         session.total_output_tokens = 2000
+        session.total_cached_tokens = 1200
         session.estimated_tokens = 3500
 
         d = session.to_dict()
@@ -127,6 +130,7 @@ class TestSessionSerialization:
         assert restored.plan == session.plan
         assert restored.total_input_tokens == 5000
         assert restored.total_output_tokens == 2000
+        assert restored.total_cached_tokens == 1200
         assert restored.estimated_tokens == 3500
 
     def test_old_session_backward_compat(self):
@@ -137,6 +141,7 @@ class TestSessionSerialization:
         assert s.permission_mode == "ask"
         assert s.total_input_tokens == 0
         assert s.total_output_tokens == 0
+        assert s.total_cached_tokens == 0
         assert s.estimated_tokens == 0  # default for old sessions
 
     def test_context_size_restored(self, session):
@@ -150,8 +155,17 @@ class TestSessionSerialization:
         data = session.to_dict()
         data["model"] = "glm-4.7"
         restored = Session.from_dict(data, "new-id")
-        assert "GLM-4.7" in restored.messages[0]["content"]
-        assert "GLM-5.2" not in restored.messages[0]["content"]
+        first_line = restored.messages[0]["content"].splitlines()[0]
+        assert "GLM-4.7" in first_line
+        assert "GLM-5.2" not in first_line
+
+    def test_reasoning_persistence_can_be_disabled(self, session, monkeypatch):
+        session.messages.append(
+            {"role": "assistant", "content": "answer", "reasoning_content": "private trace"}
+        )
+        monkeypatch.setenv("GLM_ACP_PERSIST_REASONING", "0")
+        assert "reasoning_content" not in session.to_dict()["messages"][-1]
+        assert session.messages[-1]["reasoning_content"] == "private trace"
 
 
 # ============================================================
@@ -205,12 +219,12 @@ class TestConfigOptions:
     def test_model_option_standard(self, agent, session):
         session.api_endpoint = "standard"
         opt = agent._build_model_option(session)
-        assert len(opt.options) == 5  # + vision models
+        assert len(opt.options) == 6  # + current vision models
 
     def test_thought_option_vision(self, agent, session):
         session.model = "glm-4.5v"
         opt = agent._build_thought_option(session)
-        assert len(opt.options) == 1  # disabled only
+        assert {option.value for option in opt.options} == {"disabled", "enabled"}
 
     def test_all_options_present(self, agent, session):
         opts = [
@@ -218,9 +232,16 @@ class TestConfigOptions:
             agent._build_thought_option(session),
             agent._build_api_endpoint_option(session),
             agent._build_permission_option(session),
+            agent._build_generation_profile_option(session),
         ]
         ids = [o.id for o in opts]
-        assert set(ids) == {"model", "thought_level", "api_endpoint", "permission_mode"}
+        assert set(ids) == {
+            "model",
+            "thought_level",
+            "api_endpoint",
+            "permission_mode",
+            "generation_profile",
+        }
 
 
 # ============================================================
@@ -230,13 +251,24 @@ class TestConfigOptions:
 
 class TestConfigSwitch:
     @pytest.mark.asyncio
+    async def test_generation_profile_switch(self, agent, session):
+        agent._sessions[session.id] = session
+        await agent.set_config_option("generation_profile", session.id, "precise")
+        assert session.generation_profile == "precise"
+        client = agent._client_for_session(session)
+        assert client.temperature == 0.7
+        assert client.top_p is None
+        await client.aclose()
+
+    @pytest.mark.asyncio
     async def test_model_switch(self, agent, session):
         agent._sessions[session.id] = session
         await agent.set_config_option("model", session.id, "glm-4.7")
         assert session.model == "glm-4.7"
         assert session.context_size == CONTEXT_WINDOW_TOKENS["glm-4.7"]
-        assert "GLM-4.7" in session.messages[0]["content"]
-        assert "GLM-5.2" not in session.messages[0]["content"]
+        first_line = session.messages[0]["content"].splitlines()[0]
+        assert "GLM-4.7" in first_line
+        assert "GLM-5.2" not in first_line
 
     @pytest.mark.asyncio
     async def test_session_reuses_model_client(self, agent, session):
@@ -292,13 +324,21 @@ class TestConfigSwitch:
         assert session.thought_level == "max"
 
     @pytest.mark.asyncio
-    async def test_thought_level_max_on_vision_rejected(self, agent, session):
-        """Vision models only support 'disabled' thought level."""
+    async def test_standard_thought_level_on_vision_accepted(self, agent, session):
+        """Current vision models support standard thinking."""
         agent._sessions[session.id] = session
         session.model = "glm-4.5v"
         session.thought_level = "disabled"
         await agent.set_config_option("thought_level", session.id, "enabled")
-        assert session.thought_level == "disabled"  # unchanged
+        assert session.thought_level == "enabled"
+
+    @pytest.mark.asyncio
+    async def test_deep_thought_level_on_vision_rejected(self, agent, session):
+        agent._sessions[session.id] = session
+        session.model = "glm-4.5v"
+        session.thought_level = "enabled"
+        await agent.set_config_option("thought_level", session.id, "max")
+        assert session.thought_level == "enabled"
 
     @pytest.mark.asyncio
     async def test_model_switch_updates_thought_level(self, agent, session):
@@ -731,7 +771,7 @@ class TestInitialize:
         resp = await agent.initialize(1)
         assert resp.agent_info.name == "glm-acp"
         assert resp.agent_info.title == "Native Z.ai GLM"
-        assert resp.agent_info.version == "0.2.1"
+        assert resp.agent_info.version == "0.3.0"
 
     @pytest.mark.asyncio
     async def test_registry_terminal_auth_method(self, agent):

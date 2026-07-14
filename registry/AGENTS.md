@@ -12,7 +12,7 @@ Own the ACP Registry manifest template and the monochrome catalog icon.
 ## Local Contracts
 
 - Manifest version must equal `glm_acp.__version__` and the release tag.
-- Binary archives must be version-pinned GitHub release URLs for supported targets.
+- Binary archives must be version-pinned GitHub release URLs for Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64.
 - The release workflow generates its published `agent.json` from the same identity and URL contract.
 
 ## Work Guidance

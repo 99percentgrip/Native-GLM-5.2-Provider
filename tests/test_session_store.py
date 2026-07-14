@@ -58,6 +58,18 @@ class TestSaveLoad:
         loaded = store.load("session-1")
         assert loaded["model"] == "glm-4.7"
 
+    def test_persistence_can_be_disabled(self, store, sample_data, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_SESSION_PERSISTENCE", "0")
+        store.save("session-1", sample_data)
+        assert store.load("session-1") is None
+        assert store.list() == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+    def test_session_files_are_user_only(self, store, sample_data):
+        store.save("session-1", sample_data)
+        assert (store._base_dir.stat().st_mode & 0o777) == 0o700
+        assert (store._path("session-1").stat().st_mode & 0o777) == 0o600
+
 
 # ============================================================
 # Path traversal protection

@@ -11,6 +11,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_config.py` covers models, endpoints, credential precedence, and secure persistence.
 - `test_registry_package.py` covers public Registry identity and release URL invariants.
 - Remaining modules cover tools, sessions, streaming, compaction, and GLM HTTP behavior.
+- `test_mcp.py` and `test_memory.py` cover remote MCP protocol handling and opt-in project memory.
 
 ## Local Contracts
 

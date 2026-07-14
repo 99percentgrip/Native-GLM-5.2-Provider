@@ -1,0 +1,32 @@
+[
+  {
+    "id": "python-bugfix",
+    "prompt": "Fix the off-by-one bug in range_sum.py. Preserve the public function name and verify it.",
+    "files": {
+      "range_sum.py": "def range_sum(n: int) -> int:\n    return sum(range(n))\n",
+      "test_range_sum.py": "from range_sum import range_sum\n\ndef test_inclusive():\n    assert range_sum(4) == 10\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 180
+  },
+  {
+    "id": "targeted-refactor",
+    "prompt": "Refactor formatter.py so format_user handles missing names as 'Anonymous' without changing existing valid-name behavior. Add or update tests.",
+    "files": {
+      "formatter.py": "def format_user(user):\n    return user['name'].strip().title()\n",
+      "test_formatter.py": "from formatter import format_user\n\ndef test_name():\n    assert format_user({'name': 'ada lovelace'}) == 'Ada Lovelace'\n\ndef test_missing():\n    assert format_user({}) == 'Anonymous'\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 180
+  },
+  {
+    "id": "instruction-following",
+    "prompt": "Implement slugify.py according to AGENTS.md and ensure the tests pass.",
+    "files": {
+      "AGENTS.md": "# Contract\n\nslugify must lowercase ASCII text, replace runs of non-alphanumeric characters with one dash, and strip leading/trailing dashes. Do not add dependencies.\n",
+      "test_slugify.py": "from slugify import slugify\n\ndef test_slugify():\n    assert slugify('  Hello, GLM 5.2! ') == 'hello-glm-5-2'\n"
+    },
+    "verify": ["python", "-m", "pytest", "-q"],
+    "timeout": 180
+  }
+]

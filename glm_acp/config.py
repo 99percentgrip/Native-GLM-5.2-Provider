@@ -16,15 +16,20 @@ MAX_AUTO_CONTINUATIONS = 20
 # Retry configuration for transient API errors (429, 500, 502, 503, 504)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds, exponential: 1s, 2s, 4s
+RETRY_MAX_DELAY = 60.0
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 # Per-model max_tokens limits.  Models not listed here fall back to
 # DEFAULT_MAX_TOKENS.
-MAX_TOKENS_BY_MODEL: dict[str, int] = {}
+MAX_TOKENS_BY_MODEL: dict[str, int] = {
+    "glm-4.5v": 16_384,
+    "glm-4.6v": 32_768,
+}
 
-# Vision models (models with a "v" suffix). These support image inputs
-# but do not support thinking / reasoning_effort.
-VISION_MODELS = frozenset({"glm-4.5v", "glm-4.6v"})
+# Vision models accept multimodal message blocks. Current Z.ai vision models
+# support standard thinking; reasoning_effort remains GLM-5.2-only.
+VISION_MODELS = frozenset({"glm-5v-turbo", "glm-4.5v", "glm-4.6v"})
+THINKING_UNSUPPORTED_MODELS: frozenset[str] = frozenset()
 
 # --- API endpoints (plans) ---
 # The user can switch between these from the chat dropdown so they're not
@@ -48,6 +53,28 @@ API_ENDPOINTS: dict[str, dict[str, str]] = {
 }
 DEFAULT_API_ENDPOINT = "coding"
 
+GENERATION_PROFILES: dict[str, dict[str, Any]] = {
+    "balanced": {
+        "name": "Balanced",
+        "description": "Use Z.ai model defaults; recommended for general coding",
+        "temperature": None,
+        "top_p": None,
+    },
+    "precise": {
+        "name": "Precise",
+        "description": "Lower sampling variance for focused fixes and deterministic edits",
+        "temperature": 0.7,
+        "top_p": None,
+    },
+    "exploratory": {
+        "name": "Exploratory",
+        "description": "Broader nucleus sampling for ideation and alternative designs",
+        "temperature": None,
+        "top_p": 0.98,
+    },
+}
+DEFAULT_GENERATION_PROFILE = "balanced"
+
 # --- Token estimation (heuristic) ---
 # _estimate_tokens uses 3.5 chars/token (code is denser than natural
 # language which averages ~4 chars/token). The ratio is applied locally
@@ -65,9 +92,10 @@ COMPACTION_SUMMARY_MAX_TOKENS = 16_384
 # Context window sizes in tokens, keyed by model id.
 CONTEXT_WINDOW_TOKENS: dict[str, int] = {
     "glm-5.2": 1_000_000,
-    "glm-5-turbo": 1_000_000,
-    "glm-4.7": 1_000_000,
-    "glm-4.5v": 131_072,
+    "glm-5-turbo": 200_000,
+    "glm-4.7": 200_000,
+    "glm-5v-turbo": 200_000,
+    "glm-4.5v": 65_536,
     "glm-4.6v": 131_072,
 }
 
@@ -117,31 +145,41 @@ COMPACTION_USER_PREFIX = (
 MODELS: dict[str, dict[str, Any]] = {
     "glm-5.2": {
         "name": "GLM-5.2 (Flagship)",
-        "description": "Latest flagship — maximum reasoning, coding, and long-horizon agentic tasks",
+        "description": (
+            "Latest flagship — maximum reasoning, coding, and long-horizon agentic tasks"
+        ),
         "context_window": "1M",
         "plans": ["coding", "standard", "bigmodel"],
     },
     "glm-5-turbo": {
         "name": "GLM-5-Turbo",
         "description": "Flagship model optimized for speed — complex tasks with lower latency",
-        "context_window": "1M",
+        "context_window": "200K",
         "plans": ["coding", "standard", "bigmodel"],
     },
     "glm-4.7": {
         "name": "GLM-4.7",
         "description": "Balanced model for daily development and routine tasks",
-        "context_window": "1M",
+        "context_window": "200K",
         "plans": ["coding", "standard", "bigmodel"],
+    },
+    "glm-5v-turbo": {
+        "name": "GLM-5V-Turbo (Vision Coding)",
+        "description": "Multimodal coding model for screenshots, video, UI, and agent workflows",
+        "context_window": "200K",
+        "plans": ["standard", "bigmodel"],
     },
     "glm-4.5v": {
         "name": "GLM-4.5V (Vision)",
         "description": "Vision-capable — analyze screenshots, diagrams, charts",
-        "context_window": "128K",
+        "context_window": "64K",
         "plans": ["standard", "bigmodel"],
     },
     "glm-4.6v": {
         "name": "GLM-4.6V (Vision)",
-        "description": "Vision model — newer vision model with improved OCR and image understanding",
+        "description": (
+            "Vision model — newer vision model with improved OCR and image understanding"
+        ),
         "context_window": "128K",
         "plans": ["standard", "bigmodel"],
     },
@@ -182,35 +220,46 @@ THOUGHT_LEVELS: dict[str, dict[str, Any]] = {
 def thought_levels_for_model(model: str) -> dict[str, dict[str, Any]]:
     """Return the subset of thought levels available for the given model.
 
-    Vision models don't support thinking — only 'disabled' is available.
     Deep reasoning levels are restricted to models that list them.
     """
-    if model in VISION_MODELS:
-        return {"disabled": THOUGHT_LEVELS["disabled"]}
-    return {
-        k: v
-        for k, v in THOUGHT_LEVELS.items()
-        if v["models"] is None or model in v["models"]
-    }
+    return {k: v for k, v in THOUGHT_LEVELS.items() if v["models"] is None or model in v["models"]}
 
 
 def models_for_plan(plan: str) -> dict[str, dict[str, Any]]:
     """Return the subset of models available on the given API plan."""
-    return {
-        model_id: info
-        for model_id, info in MODELS.items()
-        if plan in info.get("plans", [])
-    }
+    return {model_id: info for model_id, info in MODELS.items() if plan in info.get("plans", [])}
 
 
 # Tools that modify the filesystem or execute commands — these require
 # user permission when the session is in "ask" mode and are blocked in
 # "read" mode.
-DESTRUCTIVE_TOOLS = frozenset({"write_file", "edit_file", "run_command"})
+DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "run_command",
+        "store_memory",
+        "mcp_call",
+        "mcp_list_tools",
+        "vision_analyze",
+    }
+)
 
 AUTH_METHOD_ID = "zai-api-key-setup"
 CONFIG_DIR_ENV = "GLM_ACP_CONFIG_DIR"
 CREDENTIALS_FILENAME = "credentials.json"
+PERSIST_REASONING_ENV = "GLM_ACP_PERSIST_REASONING"
+
+
+def persist_reasoning() -> bool:
+    """Whether exact reasoning traces may be written to session storage."""
+    return os.environ.get(PERSIST_REASONING_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def config_dir() -> Path:
@@ -292,18 +341,12 @@ def store_api_key(key: str) -> Path:
 
 def has_api_key() -> bool:
     return bool(
-        os.environ.get("ZAI_API_KEY")
-        or os.environ.get("Z_AI_API_KEY")
-        or load_stored_api_key()
+        os.environ.get("ZAI_API_KEY") or os.environ.get("Z_AI_API_KEY") or load_stored_api_key()
     )
 
 
 def get_api_key() -> str:
-    key = (
-        os.environ.get("ZAI_API_KEY")
-        or os.environ.get("Z_AI_API_KEY")
-        or load_stored_api_key()
-    )
+    key = os.environ.get("ZAI_API_KEY") or os.environ.get("Z_AI_API_KEY") or load_stored_api_key()
     if not key:
         raise RuntimeError(
             "Z.ai API credentials are required. Run `glm-acp --setup` or set "

@@ -79,7 +79,7 @@ Default section order:
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
 - Public releases and ACP Registry metadata identify Aleksejs Kozlitins as author and use Apache-2.0.
-- Registry installation uses version-pinned frozen binaries for Linux, macOS x86-64, and Windows x86-64.
+- Registry installation uses version-pinned frozen binaries for Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64.
 - Terminal authentication must never echo or log `ZAI_API_KEY`; environment credentials take precedence over the user-only stored credential file.
 
 ## Project Purpose
@@ -89,16 +89,18 @@ This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM
 - Language: Python 3.10+
 - Transport: ACP over stdio (JSON-RPC 2.0)
 - APIs: Z.ai Coding Plan, Standard API, and BigModel (CN)
-- Models: GLM-5.2, GLM-5-Turbo, GLM-4.7, GLM-4.5V, and GLM-4.6V according to the selected API plan
+- Models: GLM-5.2, GLM-5-Turbo, GLM-4.7, GLM-5V-Turbo, GLM-4.5V, and GLM-4.6V according to the selected API plan
 - Entry points: `glm-acp`, `python3 -m glm_acp`, and the frozen `native-glm-acp` executable
 
 ## Current Project Status
 
-- Package and ACP implementation version is `0.2.1` from `glm_acp.__version__`.
+- Package and ACP implementation version is `0.3.0` from `glm_acp.__version__`.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - ACP initialization advertises Registry-compatible `zai-api-key-setup` Terminal Auth.
 - Terminal setup stores credentials atomically without echoing or logging the key; environment credentials take precedence.
-- GitHub Actions tests Python 3.10–3.13 and packages Linux, macOS x86-64, and Windows x86-64 binaries.
+- GitHub Actions tests Python 3.10–3.13 and packages Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64 binaries.
+- Official Z.ai Web Search, Web Reader, and optional local Vision MCP capabilities are exposed alongside configurable MCP servers.
+- Root project instructions and permission-gated `.glm-acp/memory.md` knowledge are loaded into model context.
 - Tagged releases publish checksums, provenance attestations, Python distributions, Registry metadata, and the icon.
 
 ## Install and distribution (binding)
@@ -122,7 +124,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-0.2.1.dist-info
+# expect: editable glm_acp metadata and glm_acp-0.3.0.dist-info
 ```
 
 ## Verification
@@ -150,3 +152,4 @@ authentication verifier against the published version-pinned archives.
 | `pyproject.toml` | Package metadata, dependencies, entry point, and build configuration | Python implementation |
 | `uv.lock` | Reproducible dependency resolution | Python implementation |
 | `README.md` | Installation, operation, security, and release guide | Project maintainers |
+| `benchmarks/` | Opt-in native/external coding-agent quality evaluation | Quality engineering |

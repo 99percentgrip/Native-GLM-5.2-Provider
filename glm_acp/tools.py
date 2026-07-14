@@ -10,9 +10,14 @@ import asyncio
 import fnmatch
 import os
 import re
+import shutil
+import signal
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .memory import append_memory, memory_path, read_memory
 
 MAX_TOOL_OUTPUT_CHARS = 64_000
 _COMMAND_STREAM_LIMIT = MAX_TOOL_OUTPUT_CHARS // 2
@@ -26,6 +31,34 @@ _ALWAYS_IGNORE = [
     "build",
     ".eggs",
 ]
+
+
+def _bounded_output(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n... (truncated at {limit} characters)"
+
+
+def _run_rg(args: list[str], root: Path) -> str | None:
+    """Run ripgrep without a shell, falling back when it is unavailable."""
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+    try:
+        result = subprocess.run(
+            [rg, *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode not in {0, 1}:
+        return None
+    return _bounded_output(result.stdout.rstrip()) or "No matches found"
 
 
 def _load_gitignore_patterns(root: Path) -> list[str]:
@@ -101,7 +134,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file. Creates the file if it does not exist, overwrites if it does.",
+            "description": (
+                "Write content to a file. Creates the file if it does not exist, "
+                "overwrites if it does."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -116,7 +152,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Replace a specific block of text in a file. Both old_text and new_text must be exact.",
+            "description": (
+                "Replace a specific block of text in a file. Both old_text and "
+                "new_text must be exact."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -125,6 +164,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "new_text": {"type": "string", "description": "Text to replace it with"},
                 },
                 "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": (
+                "Apply a validated unified diff to one text file atomically. "
+                "Read the file first and include exact context lines."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file"},
+                    "patch": {"type": "string", "description": "Unified diff hunks"},
+                },
+                "required": ["path", "patch"],
             },
         },
     },
@@ -146,7 +203,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_files",
-            "description": "Search for files by glob pattern (e.g. **/*.py). Returns matching paths.",
+            "description": (
+                "Search for files by glob pattern (e.g. **/*.py). Returns matching paths."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -161,7 +220,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "grep",
-            "description": "Search file contents using a regular expression. Returns matching lines with file and line number.",
+            "description": (
+                "Search file contents using a regular expression. Returns matching "
+                "lines with file and line number."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -180,7 +242,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Execute a shell command in the working directory. Use for builds, tests, git, etc.",
+            "description": (
+                "Execute a shell command in the working directory. Use for builds, tests, git, etc."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -238,17 +302,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_memory",
+            "description": "Read opt-in durable knowledge recorded for this project.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "store_memory",
+            "description": (
+                "Store one stable, reusable project fact or user preference. "
+                "Do not store secrets, transient task state, or reasoning."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"entry": {"type": "string"}},
+                "required": ["entry"],
+            },
+        },
+    },
 ]
 
 TOOL_KINDS: dict[str, str] = {
     "read_file": "read",
     "write_file": "edit",
     "edit_file": "edit",
+    "apply_patch": "edit",
     "list_directory": "read",
     "search_files": "search",
     "grep": "search",
     "run_command": "execute",
     "update_plan": "other",
+    "recall_memory": "read",
+    "store_memory": "edit",
 }
 
 
@@ -314,6 +404,7 @@ async def execute_tool(
     name: str,
     arguments: dict[str, Any],
     sandbox: Sandbox,
+    on_output: Any = None,
 ) -> ToolResult:
     """Execute a tool call and return a structured result."""
     try:
@@ -323,6 +414,8 @@ async def execute_tool(
             return await _write_file(arguments, sandbox)
         elif name == "edit_file":
             return await _edit_file(arguments, sandbox)
+        elif name == "apply_patch":
+            return await _apply_patch(arguments, sandbox)
         elif name == "list_directory":
             return await _list_directory(arguments, sandbox)
         elif name == "search_files":
@@ -330,7 +423,15 @@ async def execute_tool(
         elif name == "grep":
             return await _grep(arguments, sandbox)
         elif name == "run_command":
-            return await _run_command(arguments, sandbox)
+            return await _run_command(arguments, sandbox, on_output=on_output)
+        elif name == "recall_memory":
+            return ToolResult(output=read_memory(str(sandbox.roots[0])))
+        elif name == "store_memory":
+            sandbox.resolve(str(memory_path(str(sandbox.roots[0]))))
+            path = await asyncio.to_thread(
+                append_memory, str(sandbox.roots[0]), str(arguments.get("entry", ""))
+            )
+            return ToolResult(output=f"Stored project memory in {path}", file_path=str(path))
         else:
             raise ToolError(f"Unknown tool: {name}")
     except ToolError:
@@ -435,6 +536,78 @@ def _edit_file_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     )
 
 
+async def _apply_patch(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
+    return await asyncio.to_thread(_apply_patch_sync, args, sandbox)
+
+
+def _apply_patch_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
+    """Apply unified-diff hunks only after every context line validates."""
+    path = sandbox.resolve(args["path"])
+    if not path.is_file():
+        raise ToolError(f"File not found: {path}")
+    old_text = _read_utf8_text(path, "patch")
+    source = old_text.splitlines(keepends=True)
+    patch_lines = str(args.get("patch", "")).splitlines(keepends=True)
+    header = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+    output: list[str] = []
+    source_index = 0
+    hunks = 0
+    i = 0
+    while i < len(patch_lines):
+        match = header.match(patch_lines[i].rstrip("\r\n"))
+        if not match:
+            i += 1
+            continue
+        hunks += 1
+        target_index = int(match.group(1)) - 1
+        if target_index < source_index or target_index > len(source):
+            raise ToolError("Patch hunk has an invalid or overlapping source range")
+        output.extend(source[source_index:target_index])
+        source_index = target_index
+        expected_old = int(match.group(2) or 1)
+        expected_new = int(match.group(4) or 1)
+        seen_old = 0
+        seen_new = 0
+        i += 1
+        while i < len(patch_lines) and not patch_lines[i].startswith("@@ "):
+            line = patch_lines[i]
+            if line.startswith(("--- ", "+++ ")):
+                i += 1
+                continue
+            if line.startswith("\\ No newline at end of file"):
+                i += 1
+                continue
+            prefix = line[:1]
+            payload = line[1:]
+            if prefix in {" ", "-"}:
+                if source_index >= len(source) or source[source_index] != payload:
+                    raise ToolError(f"Patch context mismatch at source line {source_index + 1}")
+                if prefix == " ":
+                    output.append(source[source_index])
+                    seen_new += 1
+                source_index += 1
+                seen_old += 1
+            elif prefix == "+":
+                output.append(payload)
+                seen_new += 1
+            else:
+                raise ToolError(f"Unsupported patch line: {line.rstrip()}")
+            i += 1
+        if seen_old != expected_old or seen_new != expected_new:
+            raise ToolError("Patch hunk line counts do not match its unified diff header")
+    if not hunks:
+        raise ToolError("Patch contains no unified diff hunks")
+    output.extend(source[source_index:])
+    new_text = "".join(output)
+    path.write_text(new_text, encoding="utf-8")
+    return ToolResult(
+        output=f"Applied {hunks} patch hunk{'s' if hunks != 1 else ''} to {path}",
+        file_path=str(path),
+        old_text=old_text,
+        new_text=new_text,
+    )
+
+
 async def _list_directory(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     return await asyncio.to_thread(_list_directory_sync, args, sandbox)
 
@@ -448,7 +621,8 @@ def _list_directory_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     for e in entries:
         prefix = "dir " if e.is_dir() else "    "
         lines.append(f"{prefix}{e.name}")
-    return ToolResult(output="\n".join(lines) if lines else "(empty)", file_path=str(path))
+    output = "\n".join(lines) if lines else "(empty)"
+    return ToolResult(output=_bounded_output(output), file_path=str(path))
 
 
 async def _search_files(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
@@ -475,6 +649,9 @@ def _walk_files(root: Path, patterns: list[str]):
 def _search_files_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
     pattern = args["pattern"]
     root = sandbox.resolve(args.get("path", "."))
+    fast = _run_rg(["--files", "--glob", pattern], root)
+    if fast is not None:
+        return ToolResult(output=fast)
     gitignore_patterns = _load_gitignore_patterns(root)
     # Always ignore common non-project directories
     ignore_patterns = gitignore_patterns + _ALWAYS_IGNORE
@@ -487,7 +664,8 @@ def _search_files_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
                 continue
             matches.append(rel_str)
     matches.sort()
-    return ToolResult(output="\n".join(matches[:200]) if matches else "No files found")
+    output = "\n".join(matches[:200]) if matches else "No files found"
+    return ToolResult(output=_bounded_output(output))
 
 
 async def _grep(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
@@ -502,6 +680,13 @@ def _grep_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
         regex = re.compile(pattern)
     except re.error as e:
         raise ToolError(f"Invalid regex pattern: {e}")
+    rg_args = ["--line-number", "--color", "never", "--max-count", "500"]
+    if include:
+        rg_args.extend(["--glob", include])
+    rg_args.append(pattern)
+    fast = _run_rg(rg_args, root)
+    if fast is not None:
+        return ToolResult(output=fast)
     gitignore_patterns = _load_gitignore_patterns(root)
     ignore_patterns = gitignore_patterns + _ALWAYS_IGNORE
     results = []
@@ -526,22 +711,29 @@ def _grep_sync(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
                 break
         if len(results) >= 500:
             break
-    return ToolResult(output="\n".join(results) if results else "No matches found")
+    output = "\n".join(results) if results else "No matches found"
+    return ToolResult(output=_bounded_output(output))
 
 
-async def _run_command(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
+async def _run_command(args: dict[str, Any], sandbox: Sandbox, on_output: Any = None) -> ToolResult:
     command = args["command"]
     timeout = args.get("timeout", 120)
     if not isinstance(timeout, (int, float)) or timeout <= 0:
         timeout = 120
+    process_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_kwargs["start_new_session"] = True
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(sandbox.roots[0]),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **process_kwargs,
     )
 
-    async def collect(stream: asyncio.StreamReader | None) -> tuple[bytes, int]:
+    async def collect(stream: asyncio.StreamReader | None, label: str) -> tuple[bytes, int]:
         if stream is None:
             return b"", 0
         head_limit = _COMMAND_STREAM_LIMIT // 2
@@ -551,6 +743,8 @@ async def _run_command(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
         total = 0
         while chunk := await stream.read(8192):
             total += len(chunk)
+            if on_output:
+                await on_output(label, chunk.decode(errors="replace"))
             if len(head) < head_limit:
                 take = min(head_limit - len(head), len(chunk))
                 head.extend(chunk[:take])
@@ -564,13 +758,19 @@ async def _run_command(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:
         marker = (f"\n... (truncated {total - _COMMAND_STREAM_LIMIT} bytes) ...\n").encode()
         return bytes(head) + marker + bytes(tail), total
 
-    stdout_task = asyncio.create_task(collect(proc.stdout))
-    stderr_task = asyncio.create_task(collect(proc.stderr))
+    stdout_task = asyncio.create_task(collect(proc.stdout, "stdout"))
+    stderr_task = asyncio.create_task(collect(proc.stderr, "stderr"))
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
         stdout_info, stderr_info = await asyncio.gather(stdout_task, stderr_task)
     except asyncio.TimeoutError:
-        proc.kill()
+        if os.name == "nt":
+            proc.kill()
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         await proc.wait()
         await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         raise ToolError(f"Command timed out after {timeout}s")

@@ -19,7 +19,9 @@ def test_registry_manifest_matches_release_contract():
     assert manifest["repository"] == ("https://github.com/99percentgrip/Native-GLM-5.2-Provider")
     binaries = manifest["distribution"]["binary"]
     assert set(binaries) == {
+        "darwin-aarch64",
         "darwin-x86_64",
+        "linux-aarch64",
         "linux-x86_64",
         "windows-x86_64",
     }

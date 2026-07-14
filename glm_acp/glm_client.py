@@ -10,8 +10,11 @@ import asyncio
 import json
 import logging
 import os
+import random
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -26,8 +29,9 @@ from .config import (
     MAX_RETRIES,
     MAX_TOKENS_BY_MODEL,
     RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
     RETRYABLE_STATUS_CODES,
-    VISION_MODELS,
+    THINKING_UNSUPPORTED_MODELS,
     get_api_key,
 )
 
@@ -35,8 +39,9 @@ from .config import (
 class GlmApiError(RuntimeError):
     """Raised when the Z.ai API returns a non-200 status code."""
 
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, retry_after: str | None = None) -> None:
         self.status_code = status_code
+        self.retry_after = retry_after
         super().__init__(f"GLM API error {status_code}: {message}")
 
 
@@ -80,23 +85,33 @@ class GlmClient:
         thought_level: str = "enabled",
         reasoning_effort: str | None = None,
         base_url: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
     ):
         self.model = model
         self.thought_level = thought_level
         self.reasoning_effort = reasoning_effort
-        self.preserve_thinking = reasoning_effort in {"high", "max"}
+        self.temperature = temperature
+        self.top_p = top_p
+        endpoint = base_url or os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+        self.preserve_thinking = thought_level == "enabled" and (
+            reasoning_effort in {"high", "max"} or "/coding/" in endpoint
+        )
         self._cancelled = False
+        self._active_request_task: asyncio.Task[Any] | None = None
         self._api_key = get_api_key()
         self._client = httpx.AsyncClient(
-            base_url=base_url
-            or os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"),
+            base_url=endpoint,
             headers={"Authorization": f"Bearer {self._api_key}"},
             timeout=httpx.Timeout(DEFAULT_TIMEOUT, read=DEFAULT_TIMEOUT),
         )
 
     def cancel(self) -> None:
-        """Signal that the current operation should be aborted."""
+        """Abort the active HTTP operation and mark the turn cancelled."""
         self._cancelled = True
+        task = self._active_request_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
 
     def begin_turn(self) -> None:
         """Reset turn-local cancellation state before a serialized prompt."""
@@ -150,7 +165,9 @@ class GlmClient:
                     assistant_message,
                     {
                         "role": "user",
-                        "content": "Continue exactly where you left off. Do not repeat or summarize.",
+                        "content": (
+                            "Continue exactly where you left off. Do not repeat or summarize."
+                        ),
                     },
                 ]
                 result.content += "\n"
@@ -186,7 +203,7 @@ class GlmClient:
             "max_tokens": max_tokens,
         }
         # Vision models don't support the thinking parameter
-        if self.model not in VISION_MODELS:
+        if self.model not in THINKING_UNSUPPORTED_MODELS:
             body["thinking"] = {"type": "disabled"}
 
         # Retry with exponential backoff
@@ -200,10 +217,14 @@ class GlmClient:
                 err_text = resp.text[:500]
             except Exception:
                 err_text = resp.content[:500].decode(errors="replace")
-            last_error = GlmApiError(resp.status_code, err_text)
+            last_error = GlmApiError(
+                resp.status_code,
+                err_text,
+                getattr(resp, "headers", {}).get("Retry-After"),
+            )
             if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
                 raise last_error
-            delay = RETRY_BASE_DELAY * (2**attempt)
+            delay = self._retry_delay(attempt, last_error.retry_after)
             await asyncio.sleep(delay)
 
         try:
@@ -285,8 +306,7 @@ class GlmClient:
         }
         # Thinking / reasoning_effort only applies to text reasoning models,
         # not vision models.
-        is_vision = self.model in VISION_MODELS
-        if not is_vision:
+        if self.model not in THINKING_UNSUPPORTED_MODELS:
             body["thinking"] = {
                 "type": self.thought_level,
                 "clear_thinking": not self.preserve_thinking,
@@ -295,6 +315,11 @@ class GlmClient:
                 body["reasoning_effort"] = self.reasoning_effort
         if tools:
             body["tools"] = tools
+            body["tool_stream"] = True
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
+        if self.top_p is not None:
+            body["top_p"] = self.top_p
 
         # --- Retry with exponential backoff on transient errors ---
         for attempt in range(MAX_RETRIES + 1):
@@ -319,11 +344,11 @@ class GlmClient:
                     return
                 if attempt == MAX_RETRIES:
                     raise
-                await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
+                await asyncio.sleep(self._retry_delay(attempt))
             except GlmApiError as e:
                 if e.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
                     raise
-                delay = RETRY_BASE_DELAY * (2**attempt)
+                delay = self._retry_delay(attempt, e.retry_after)
                 logger.warning(
                     "API error %d, retrying in %.1fs (attempt %d/%d)",
                     e.status_code,
@@ -339,7 +364,7 @@ class GlmClient:
                     return
                 if attempt == MAX_RETRIES:
                     raise RuntimeError(f"Network error after {MAX_RETRIES} retries: {e}")
-                delay = RETRY_BASE_DELAY * (2**attempt)
+                delay = self._retry_delay(attempt)
                 await asyncio.sleep(delay)
 
     @staticmethod
@@ -350,9 +375,35 @@ class GlmClient:
         result.tool_calls.extend(attempt.tool_calls)
         result.finish_reason = attempt.finish_reason
         if attempt.usage:
+            previous_input = (result.usage or {}).get("api_input_tokens", 0)
             previous_output = (result.usage or {}).get("output_tokens", 0)
+            previous_cached = (result.usage or {}).get("cached_tokens", 0)
             result.usage = dict(attempt.usage)
+            result.usage["api_input_tokens"] = previous_input + attempt.usage.get("input_tokens", 0)
             result.usage["output_tokens"] = previous_output + attempt.usage.get("output_tokens", 0)
+            result.usage["cached_tokens"] = previous_cached + attempt.usage.get("cached_tokens", 0)
+            result.usage["total_tokens"] = (
+                result.usage.get("input_tokens", 0) + result.usage["output_tokens"]
+            )
+
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+        """Return a capped, jittered delay while honoring Retry-After."""
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                try:
+                    when = parsedate_to_datetime(retry_after)
+                    if when.tzinfo is None:
+                        when = when.replace(tzinfo=timezone.utc)
+                    delay = (when - datetime.now(timezone.utc)).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    delay = 0.0
+            if delay > 0:
+                return min(delay, RETRY_MAX_DELAY)
+        ceiling = min(RETRY_BASE_DELAY * (2**attempt), RETRY_MAX_DELAY)
+        return random.uniform(ceiling * 0.75, ceiling)
 
     async def _execute_stream(
         self,
@@ -393,11 +444,16 @@ class GlmClient:
             if content_batch and on_content:
                 await on_content(content_batch)
 
+        self._active_request_task = asyncio.current_task()
         try:
             async with self._client.stream("POST", "/chat/completions", json=body) as resp:
                 if resp.status_code != 200:
                     text = await resp.aread()
-                    raise GlmApiError(resp.status_code, text.decode(errors="replace")[:500])
+                    raise GlmApiError(
+                        resp.status_code,
+                        text.decode(errors="replace")[:500],
+                        getattr(resp, "headers", {}).get("Retry-After"),
+                    )
 
                 async for line in resp.aiter_lines():
                     if self._cancelled:
@@ -424,10 +480,12 @@ class GlmClient:
                     if not choices:
                         usage = chunk.get("usage")
                         if usage:
+                            details = usage.get("prompt_tokens_details") or {}
                             result.usage = {
                                 "input_tokens": usage.get("prompt_tokens", 0),
                                 "output_tokens": usage.get("completion_tokens", 0),
                                 "total_tokens": usage.get("total_tokens", 0),
+                                "cached_tokens": details.get("cached_tokens", 0),
                             }
                         continue
                     delta = choices[0].get("delta", {})
@@ -476,12 +534,16 @@ class GlmClient:
 
                     usage = chunk.get("usage")
                     if usage:
+                        details = usage.get("prompt_tokens_details") or {}
                         result.usage = {
                             "input_tokens": usage.get("prompt_tokens", 0),
                             "output_tokens": usage.get("completion_tokens", 0),
                             "total_tokens": usage.get("total_tokens", 0),
+                            "cached_tokens": details.get("cached_tokens", 0),
                         }
         finally:
+            if self._active_request_task is asyncio.current_task():
+                self._active_request_task = None
             sync_result()
             await flush(force=True)
 

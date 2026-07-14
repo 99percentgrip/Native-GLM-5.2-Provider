@@ -59,13 +59,31 @@ class TestGlmClientInit:
         client.cancel()
         assert client.cancelled
 
-    def test_vision_model_no_thinking(self):
-        """Vision models should not send thinking params."""
+    def test_thinking_support_is_explicit(self):
         import inspect
 
         src = inspect.getsource(GlmClient._do_stream_request)
-        assert "is_vision" in src
-        assert "VISION_MODELS" in src or "not is_vision" in src
+        assert "THINKING_UNSUPPORTED_MODELS" in src
+
+    def test_coding_plan_preserves_standard_thinking(self):
+        client = GlmClient(model="glm-5.2", thought_level="enabled")
+        assert client.preserve_thinking is True
+
+    def test_standard_plan_clears_standard_thinking(self):
+        client = GlmClient(
+            model="glm-5.2",
+            thought_level="enabled",
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert client.preserve_thinking is False
+
+    def test_retry_after_is_honored(self):
+        assert GlmClient._retry_delay(0, "12") == 12
+
+    def test_sampling_profile_values_are_stored(self):
+        client = GlmClient(model="glm-5.2", temperature=0.7, top_p=None)
+        assert client.temperature == 0.7
+        assert client.top_p is None
 
     def test_stream_options(self):
         """stream_options include_usage should be set."""

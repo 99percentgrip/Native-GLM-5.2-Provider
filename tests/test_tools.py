@@ -178,6 +178,31 @@ class TestToolExecution:
             )
 
     @pytest.mark.asyncio
+    async def test_apply_patch(self, tmp_path):
+        path = tmp_path / "code.py"
+        path.write_text("one\ntwo\nthree\n")
+        result = await execute_tool(
+            "apply_patch",
+            {
+                "path": "code.py",
+                "patch": "@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n",
+            },
+            Sandbox(str(tmp_path)),
+        )
+        assert path.read_text() == "one\nsecond\nthree\n"
+        assert result.old_text == "one\ntwo\nthree\n"
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_rejects_context_mismatch(self, tmp_path):
+        (tmp_path / "code.py").write_text("actual\n")
+        with pytest.raises(ToolError, match="context mismatch"):
+            await execute_tool(
+                "apply_patch",
+                {"path": "code.py", "patch": "@@ -1 +1 @@\n-expected\n+new\n"},
+                Sandbox(str(tmp_path)),
+            )
+
+    @pytest.mark.asyncio
     async def test_list_directory(self, tmp_path):
         (tmp_path / "file.py").write_text("x")
         (tmp_path / "subdir").mkdir()

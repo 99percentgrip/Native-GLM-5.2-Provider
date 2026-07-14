@@ -56,16 +56,21 @@ from .config import (
     COMPACTION_THRESHOLD,
     CONTEXT_WINDOW_TOKENS,
     DEFAULT_API_ENDPOINT,
+    DEFAULT_GENERATION_PROFILE,
     DEFAULT_MODEL,
     DESTRUCTIVE_TOOLS,
+    GENERATION_PROFILES,
     MODELS,
     THOUGHT_LEVELS,
     VISION_MODELS,
     has_api_key,
     models_for_plan,
+    persist_reasoning,
     thought_levels_for_model,
 )
 from .glm_client import GlmClient
+from .mcp import MCP_TOOL_DEFINITIONS, McpError, McpManager
+from .memory import project_knowledge
 from .session_store import SessionStore
 from .tools import (
     MAX_TOOL_OUTPUT_CHARS,
@@ -107,6 +112,9 @@ finished ones 'completed'.
 
 Project context:
 {project_context}
+
+Loaded project instructions and opt-in memory:
+{project_knowledge}
 """
 
 
@@ -176,7 +184,12 @@ def build_system_prompt(cwd: str, model: str = DEFAULT_MODEL) -> str:
         pass
 
     project_context = "\n".join(context_parts) if context_parts else "(no project files detected)"
-    return SYSTEM_PROMPT_TEMPLATE.format(project_context=project_context, model_name=model_name)
+    knowledge = project_knowledge(cwd) or "(none loaded; inspect nested instructions before edits)"
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        project_context=project_context,
+        project_knowledge=knowledge,
+        model_name=model_name,
+    )
 
 
 MODE_LIST = [
@@ -239,8 +252,9 @@ class Session:
         self.thought_level = "enabled"
         self.mode = "code"
         self.api_endpoint = DEFAULT_API_ENDPOINT
+        self.generation_profile = DEFAULT_GENERATION_PROFILE
         self.title: str | None = None
-        # Permission mode: "ask" (approve destructive tools), "bypass" (auto-approve), "read" (read-only)
+        # Permission mode: ask for destructive tools, bypass prompts, or read-only.
         self.permission_mode = "ask"
         # Current task plan — list of PlanEntry-like dicts
         self.plan: list[dict[str, str]] = []
@@ -254,10 +268,11 @@ class Session:
         # Cumulative cost tracking per session
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+        self.total_cached_tokens: int = 0
         # Runtime-only state. These fields are intentionally not persisted.
         self.prompt_lock = asyncio.Lock()
         self.client: GlmClient | None = None
-        self.client_key: tuple[str, str, str, str | None] | None = None
+        self.client_key: tuple[str, str, str, str | None, float | None, float | None] | None = None
 
     def refresh_system_prompt(self) -> None:
         """Keep the managed system prompt aligned with the selected model."""
@@ -273,6 +288,12 @@ class Session:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the conversation state for on-disk storage."""
+        messages = self.messages
+        if not persist_reasoning():
+            messages = [
+                {key: value for key, value in message.items() if key != "reasoning_content"}
+                for message in self.messages
+            ]
         return {
             "version": 1,
             "cwd": self.cwd,
@@ -280,12 +301,14 @@ class Session:
             "thought_level": self.thought_level,
             "mode": self.mode,
             "api_endpoint": self.api_endpoint,
+            "generation_profile": self.generation_profile,
             "title": self.title,
             "permission_mode": self.permission_mode,
             "plan": self.plan,
-            "messages": self.messages,
+            "messages": messages,
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
+            "total_cached_tokens": self.total_cached_tokens,
             "estimated_tokens": self.estimated_tokens,
         }
 
@@ -303,11 +326,13 @@ class Session:
         session.thought_level = data.get("thought_level", "enabled")
         session.mode = data.get("mode", "code")
         session.api_endpoint = data.get("api_endpoint", DEFAULT_API_ENDPOINT)
+        session.generation_profile = data.get("generation_profile", DEFAULT_GENERATION_PROFILE)
         session.plan = data.get("plan", [])
         session.title = data.get("title")
         session.permission_mode = data.get("permission_mode", "ask")
         session.total_input_tokens = data.get("total_input_tokens", 0)
         session.total_output_tokens = data.get("total_output_tokens", 0)
+        session.total_cached_tokens = data.get("total_cached_tokens", 0)
         session.estimated_tokens = data.get("estimated_tokens", 0)
         messages = data.get("messages")
         if messages:
@@ -325,6 +350,7 @@ class GlmAcpAgent(acp.Agent):
         self._sessions = {}
         self._store = SessionStore()
         self._tool_io_semaphore = asyncio.Semaphore(4)
+        self._mcp = McpManager()
 
     async def _save_session(self, session: Session) -> None:
         data = copy.deepcopy(session.to_dict())
@@ -339,11 +365,16 @@ class GlmAcpAgent(acp.Agent):
         base_url = API_ENDPOINTS.get(session.api_endpoint, {}).get(
             "base_url", API_ENDPOINTS[DEFAULT_API_ENDPOINT]["base_url"]
         )
+        profile = GENERATION_PROFILES.get(
+            session.generation_profile, GENERATION_PROFILES[DEFAULT_GENERATION_PROFILE]
+        )
         key = (
             session.model,
             base_url,
             thought_config.get("thinking_type", "enabled"),
             thought_config.get("reasoning_effort"),
+            profile.get("temperature"),
+            profile.get("top_p"),
         )
         if session.client is None or session.client_key != key:
             session.client = GlmClient(
@@ -351,6 +382,8 @@ class GlmAcpAgent(acp.Agent):
                 thought_level=key[2],
                 reasoning_effort=key[3],
                 base_url=base_url,
+                temperature=key[4],
+                top_p=key[5],
             )
             session.client_key = key
         return session.client
@@ -369,6 +402,7 @@ class GlmAcpAgent(acp.Agent):
             *(self._invalidate_session_client(session) for session in self._sessions.values()),
             return_exceptions=True,
         )
+        await self._mcp.aclose()
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -439,6 +473,7 @@ class GlmAcpAgent(acp.Agent):
             self._build_thought_option(session),
             self._build_api_endpoint_option(session),
             self._build_permission_option(session),
+            self._build_generation_profile_option(session),
         ]
 
         return NewSessionResponse(
@@ -504,6 +539,7 @@ class GlmAcpAgent(acp.Agent):
             self._build_thought_option(session),
             self._build_api_endpoint_option(session),
             self._build_permission_option(session),
+            self._build_generation_profile_option(session),
         ]
 
         return LoadSessionResponse(
@@ -581,6 +617,7 @@ class GlmAcpAgent(acp.Agent):
             self._build_thought_option(session),
             self._build_api_endpoint_option(session),
             self._build_permission_option(session),
+            self._build_generation_profile_option(session),
         ]
 
         return ResumeSessionResponse(
@@ -630,12 +667,14 @@ class GlmAcpAgent(acp.Agent):
         new_session.thought_level = parent.thought_level
         new_session.mode = parent.mode
         new_session.api_endpoint = parent.api_endpoint
+        new_session.generation_profile = parent.generation_profile
         new_session.permission_mode = parent.permission_mode
         new_session.plan = [dict(e) for e in parent.plan]  # deep copy plan entries
         new_session.messages = copy.deepcopy(parent.messages)  # deep copy messages
         new_session.context_size = parent.context_size
         new_session.total_input_tokens = parent.total_input_tokens
         new_session.total_output_tokens = parent.total_output_tokens
+        new_session.total_cached_tokens = parent.total_cached_tokens
         new_session.estimated_tokens = parent.estimated_tokens
 
         self._sessions[new_session.id] = new_session
@@ -646,6 +685,7 @@ class GlmAcpAgent(acp.Agent):
             self._build_thought_option(new_session),
             self._build_api_endpoint_option(new_session),
             self._build_permission_option(new_session),
+            self._build_generation_profile_option(new_session),
         ]
 
         return ForkSessionResponse(
@@ -676,7 +716,12 @@ class GlmAcpAgent(acp.Agent):
         **kwargs: Any,
     ) -> SetSessionConfigOptionResponse | None:
         session = self._sessions[session_id]
-        previous_client_key = (session.model, session.thought_level, session.api_endpoint)
+        previous_client_key = (
+            session.model,
+            session.thought_level,
+            session.api_endpoint,
+            session.generation_profile,
+        )
         if config_id == "model":
             requested = str(value)
             # Validate that this model is available on the current plan
@@ -716,8 +761,17 @@ class GlmAcpAgent(acp.Agent):
                     )
         elif config_id == "permission_mode":
             session.permission_mode = str(value)
+        elif config_id == "generation_profile":
+            requested = str(value)
+            if requested in GENERATION_PROFILES:
+                session.generation_profile = requested
 
-        current_client_key = (session.model, session.thought_level, session.api_endpoint)
+        current_client_key = (
+            session.model,
+            session.thought_level,
+            session.api_endpoint,
+            session.generation_profile,
+        )
         if current_client_key != previous_client_key:
             session.refresh_system_prompt()
             await self._invalidate_session_client(session)
@@ -730,6 +784,7 @@ class GlmAcpAgent(acp.Agent):
                 self._build_thought_option(session),
                 self._build_api_endpoint_option(session),
                 self._build_permission_option(session),
+                self._build_generation_profile_option(session),
             ],
         )
 
@@ -880,14 +935,25 @@ class GlmAcpAgent(acp.Agent):
         """Execute the full model-turn loop: stream → tool calls → repeat."""
         client = self._client_for_session(session)
         client.begin_turn()
+        all_tools = TOOL_DEFINITIONS + MCP_TOOL_DEFINITIONS
         tools = (
-            TOOL_DEFINITIONS
+            all_tools
             if session.mode == "code"
             else [
                 t
-                for t in TOOL_DEFINITIONS
+                for t in all_tools
                 if t["function"]["name"]
-                in ("read_file", "list_directory", "search_files", "grep", "update_plan")
+                in (
+                    "read_file",
+                    "list_directory",
+                    "search_files",
+                    "grep",
+                    "recall_memory",
+                    "web_search",
+                    "web_reader",
+                    "mcp_list_tools",
+                    "update_plan",
+                )
             ]
         )
 
@@ -1044,10 +1110,49 @@ class GlmAcpAgent(acp.Agent):
                     continue
 
                 try:
-                    tool_result = await execute_tool(tool_name, tool_args, session.sandbox)
+                    if tool_name in {"web_search", "web_reader", "vision_analyze"}:
+                        if tool_name == "vision_analyze":
+                            tool_args = {
+                                **tool_args,
+                                "path": str(
+                                    session.sandbox.resolve(str(tool_args.get("path", "")))
+                                ),
+                            }
+                        value = await self._mcp.invoke_preset(tool_name, tool_args)
+                        tool_result = ToolResult(
+                            output=json.dumps(value, ensure_ascii=False)[:MAX_TOOL_OUTPUT_CHARS]
+                        )
+                    elif tool_name == "mcp_list_tools":
+                        value = await self._mcp.list_tools(str(tool_args.get("server", "")))
+                        tool_result = ToolResult(
+                            output=json.dumps(value, ensure_ascii=False)[:MAX_TOOL_OUTPUT_CHARS]
+                        )
+                    elif tool_name == "mcp_call":
+                        value = await self._mcp.call(
+                            str(tool_args.get("server", "")),
+                            str(tool_args.get("tool", "")),
+                            tool_args.get("arguments", {}),
+                        )
+                        tool_result = ToolResult(
+                            output=json.dumps(value, ensure_ascii=False)[:MAX_TOOL_OUTPUT_CHARS]
+                        )
+                    else:
+                        on_output = None
+                        if tool_name == "run_command":
+
+                            async def on_command_output(stream: str, chunk: str) -> None:
+                                await self._stream_tool_output(session.id, tc_id, stream, chunk)
+
+                            on_output = on_command_output
+                        tool_result = await execute_tool(
+                            tool_name,
+                            tool_args,
+                            session.sandbox,
+                            on_output=on_output,
+                        )
                     await self._complete_tool(session.id, tc_id, tool_result)
                     output = tool_result.output
-                except ToolError as e:
+                except (ToolError, McpError) as e:
                     error_msg = str(e)
                     output = f"Error: {error_msg}"
                     await self._fail_tool(session.id, tc_id, error_msg)
@@ -1140,8 +1245,11 @@ class GlmAcpAgent(acp.Agent):
         """Update estimated token count. Prefer API-reported values."""
         if usage and usage.get("input_tokens"):
             session.estimated_tokens = usage["input_tokens"]
-            session.total_input_tokens += usage.get("input_tokens", 0)
+            session.total_input_tokens += usage.get(
+                "api_input_tokens", usage.get("input_tokens", 0)
+            )
             session.total_output_tokens += usage.get("output_tokens", 0)
+            session.total_cached_tokens += usage.get("cached_tokens", 0)
         else:
             session.estimated_tokens = GlmAcpAgent._estimate_tokens(session.messages)
 
@@ -1307,7 +1415,10 @@ class GlmAcpAgent(acp.Agent):
         commands = [
             AvailableCommand(
                 name="compact",
-                description="Manually trigger context compaction — summarize older messages to free up context space",
+                description=(
+                    "Manually trigger context compaction — summarize older "
+                    "messages to free up context space"
+                ),
             ),
             AvailableCommand(
                 name="clear-plan",
@@ -1315,7 +1426,10 @@ class GlmAcpAgent(acp.Agent):
             ),
             AvailableCommand(
                 name="clear-history",
-                description="Clear all conversation history and start fresh (keeps current model/plan settings)",
+                description=(
+                    "Clear all conversation history and start fresh "
+                    "(keeps current model/plan settings)"
+                ),
             ),
             AvailableCommand(
                 name="diff",
@@ -1327,7 +1441,9 @@ class GlmAcpAgent(acp.Agent):
             ),
             AvailableCommand(
                 name="status",
-                description="Show current model, plan, API endpoint, permission mode, and context usage",
+                description=(
+                    "Show current model, plan, API endpoint, permission mode, and context usage"
+                ),
             ),
         ]
         update = update_available_commands(commands)
@@ -1372,6 +1488,7 @@ class GlmAcpAgent(acp.Agent):
             session.estimated_tokens = 0
             session.total_input_tokens = 0
             session.total_output_tokens = 0
+            session.total_cached_tokens = 0
             session.last_reported_tokens = -1
             await self._send_plan(session)
             await self._report_usage(session)
@@ -1404,7 +1521,11 @@ class GlmAcpAgent(acp.Agent):
                 )
                 stdout_f, _ = await asyncio.wait_for(proc_full.communicate(), timeout=10)
                 summary = stdout_f.decode().strip()[:4000]
-                return f"\n📝 **Git diff**\n\n```\n{output}\n```\n\n<details><summary>Full diff</summary>\n\n```diff\n{summary}\n```\n\n</details>"
+                return (
+                    f"\n📝 **Git diff**\n\n```\n{output}\n```\n\n"
+                    f"<details><summary>Full diff</summary>\n\n```diff\n{summary}"
+                    "\n```\n\n</details>"
+                )
             except Exception as e:
                 return f"❌ Error running git diff: {e}"
 
@@ -1415,9 +1536,12 @@ class GlmAcpAgent(acp.Agent):
                 "# Conversation Export",
                 "",
                 f"- **Model:** {session.model}",
-                f"- **API Plan:** {API_ENDPOINTS.get(session.api_endpoint, {}).get('name', session.api_endpoint)}",
+                "- **API Plan:** "
+                + API_ENDPOINTS.get(session.api_endpoint, {}).get("name", session.api_endpoint),
                 f"- **Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                f"- **Total usage:** {session.total_input_tokens:,} input + {session.total_output_tokens:,} output tokens",
+                f"- **Total usage:** {session.total_input_tokens:,} input + "
+                f"{session.total_output_tokens:,} output tokens",
+                f"- **Cached input:** {session.total_cached_tokens:,} tokens",
                 "",
                 "---",
                 "",
@@ -1444,13 +1568,15 @@ class GlmAcpAgent(acp.Agent):
                             tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"]
                         ]
                         lines.append(
-                            f"## 🤖 Assistant _(tools: {', '.join(tc_names)})_\n\n{content or '*(no text)*'}\n"
+                            f"## 🤖 Assistant _(tools: {', '.join(tc_names)})_\n\n"
+                            f"{content or '*(no text)*'}\n"
                         )
                     else:
                         lines.append(f"## 🤖 Assistant\n\n{content}\n")
                 elif role == "tool":
                     lines.append(
-                        f"<details><summary>🔧 Tool result</summary>\n\n```\n{content[:2000]}\n```\n\n</details>\n"
+                        "<details><summary>🔧 Tool result</summary>\n\n```\n"
+                        f"{content[:2000]}\n```\n\n</details>\n"
                     )
             md_text = "\n".join(lines)
             export_path = (
@@ -1465,8 +1591,11 @@ class GlmAcpAgent(acp.Agent):
             return (
                 f"\n📊 **Session Status**\n"
                 f"- **Model:** {session.model}\n"
-                f"- **API Plan:** {API_ENDPOINTS.get(session.api_endpoint, {}).get('name', session.api_endpoint)}\n"
+                "- **API Plan:** "
+                + API_ENDPOINTS.get(session.api_endpoint, {}).get("name", session.api_endpoint)
+                + "\n"
                 f"- **Reasoning:** {session.thought_level}\n"
+                f"- **Generation style:** {session.generation_profile}\n"
                 f"- **Permissions:** {session.permission_mode}\n"
                 f"- **Context:** {session.estimated_tokens:,} / {session.context_size:,} tokens "
                 f"({session.estimated_tokens * 100 // max(session.context_size, 1)}%)\n"
@@ -1474,10 +1603,14 @@ class GlmAcpAgent(acp.Agent):
                 f"- **Plan tasks:** {len(session.plan)}\n"
                 f"- **Total usage:** {session.total_input_tokens:,} input + "
                 f"{session.total_output_tokens:,} output tokens\n"
+                f"- **Cached input:** {session.total_cached_tokens:,} tokens\n"
             )
 
         else:
-            return f"Unknown command: {command}\nAvailable commands: /compact, /clear-plan, /clear-history, /diff, /export, /status"
+            return (
+                f"Unknown command: {command}\nAvailable commands: /compact, "
+                "/clear-plan, /clear-history, /diff, /export, /status"
+            )
 
     # ------------------------------------------------------------------
     # Context compaction
@@ -1779,7 +1912,14 @@ class GlmAcpAgent(acp.Agent):
         This fires after the tool call is streamed (we now have the full
         args) and before execution begins. Zed uses this to open the file.
         """
-        if name not in ("read_file", "write_file", "edit_file", "list_directory"):
+        if name not in (
+            "read_file",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "list_directory",
+            "vision_analyze",
+        ):
             return
         path = args.get("path")
         if not path:
@@ -1798,6 +1938,17 @@ class GlmAcpAgent(acp.Agent):
 
     async def _update_tool(self, session_id: str, tool_call_id: str, status: str) -> None:
         chunk = acp.update_tool_call(tool_call_id=tool_call_id, status=status)
+        await self._conn.session_update(session_id=session_id, update=chunk)
+
+    async def _stream_tool_output(
+        self, session_id: str, tool_call_id: str, stream: str, text: str
+    ) -> None:
+        """Publish bounded live command output while the process is running."""
+        chunk = acp.update_tool_call(
+            tool_call_id=tool_call_id,
+            status="in_progress",
+            content=[acp.tool_content(acp.text_block(f"{stream}:\n{text[-4000:]}"))],
+        )
         await self._conn.session_update(session_id=session_id, update=chunk)
 
     async def _complete_tool(
@@ -1919,10 +2070,18 @@ class GlmAcpAgent(acp.Agent):
             "read_file": "Reading file",
             "write_file": "Writing file",
             "edit_file": "Editing file",
+            "apply_patch": "Applying patch",
             "list_directory": "Listing directory",
             "search_files": "Searching files",
             "grep": "Searching code",
             "run_command": "Running command",
+            "recall_memory": "Reading project memory",
+            "store_memory": "Updating project memory",
+            "web_search": "Searching the web",
+            "web_reader": "Reading web page",
+            "vision_analyze": "Analyzing image",
+            "mcp_list_tools": "Listing MCP tools",
+            "mcp_call": "Calling MCP tool",
             "update_plan": "Updating plan",
         }.get(name, name)
 
@@ -1990,6 +2149,24 @@ class GlmAcpAgent(acp.Agent):
                     name="Bypass",
                     description="Auto-approve everything — no prompts",
                 ),
+            ],
+        )
+
+    def _build_generation_profile_option(self, session: Session) -> SessionConfigOptionSelect:
+        return SessionConfigOptionSelect(
+            id="generation_profile",
+            name="Generation Style",
+            description="Sampling profile; changes only one sampling control at a time",
+            category="other",
+            type="select",
+            current_value=session.generation_profile,
+            options=[
+                SessionConfigSelectOption(
+                    value=profile_id,
+                    name=info["name"],
+                    description=info["description"],
+                )
+                for profile_id, info in GENERATION_PROFILES.items()
             ],
         )
 

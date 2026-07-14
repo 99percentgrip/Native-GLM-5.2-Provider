@@ -13,6 +13,7 @@ from glm_acp.config import (
     DESTRUCTIVE_TOOLS,
     CONFIG_DIR_ENV,
     MAX_RETRIES,
+    GENERATION_PROFILES,
     RETRYABLE_STATUS_CODES,
     thought_levels_for_model,
     models_for_plan,
@@ -27,7 +28,9 @@ from glm_acp.config import (
 class TestModelRegistry:
     def test_all_models_have_context_window(self):
         for model_id in MODELS:
-            assert model_id in CONTEXT_WINDOW_TOKENS, f"{model_id} missing from CONTEXT_WINDOW_TOKENS"
+            assert model_id in CONTEXT_WINDOW_TOKENS, (
+                f"{model_id} missing from CONTEXT_WINDOW_TOKENS"
+            )
 
     def test_all_models_have_plans(self):
         for model_id, info in MODELS.items():
@@ -35,14 +38,17 @@ class TestModelRegistry:
             assert len(info["plans"]) > 0, f"{model_id} has no plans"
 
     def test_vision_models_flagged(self):
-        assert VISION_MODELS == frozenset({"glm-4.5v", "glm-4.6v"})
+        assert VISION_MODELS == frozenset({"glm-5v-turbo", "glm-4.5v", "glm-4.6v"})
 
     def test_default_model_exists(self):
         assert DEFAULT_MODEL in MODELS
 
     def test_context_window_sizes(self):
         assert CONTEXT_WINDOW_TOKENS["glm-5.2"] == 1_000_000
-        assert CONTEXT_WINDOW_TOKENS["glm-4.5v"] == 131_072
+        assert CONTEXT_WINDOW_TOKENS["glm-5-turbo"] == 200_000
+        assert CONTEXT_WINDOW_TOKENS["glm-4.7"] == 200_000
+        assert CONTEXT_WINDOW_TOKENS["glm-5v-turbo"] == 200_000
+        assert CONTEXT_WINDOW_TOKENS["glm-4.5v"] == 65_536
 
 
 class TestPlanModelSync:
@@ -54,13 +60,14 @@ class TestPlanModelSync:
 
     def test_standard_plan_includes_vision(self):
         models = models_for_plan("standard")
-        assert len(models) == 5
+        assert len(models) == 6
+        assert "glm-5v-turbo" in models
         assert "glm-4.5v" in models
         assert "glm-4.6v" in models
 
     def test_bigmodel_plan_includes_vision(self):
         models = models_for_plan("bigmodel")
-        assert len(models) == 5
+        assert len(models) == 6
 
     def test_default_plan_is_coding(self):
         assert DEFAULT_API_ENDPOINT == "coding"
@@ -77,14 +84,13 @@ class TestThoughtLevels:
         assert len(levels) == 2
         assert set(levels.keys()) == {"disabled", "enabled"}
 
-    def test_vision_model_disabled_only(self):
+    def test_vision_model_supports_standard_thinking(self):
         levels = thought_levels_for_model("glm-4.5v")
-        assert len(levels) == 1
-        assert "disabled" in levels
+        assert set(levels) == {"disabled", "enabled"}
 
-    def test_vision_model_disabled_only_46v(self):
+    def test_vision_model_supports_standard_thinking_46v(self):
         levels = thought_levels_for_model("glm-4.6v")
-        assert len(levels) == 1
+        assert set(levels) == {"disabled", "enabled"}
 
 
 class TestConstants:
@@ -92,6 +98,8 @@ class TestConstants:
         assert "write_file" in DESTRUCTIVE_TOOLS
         assert "edit_file" in DESTRUCTIVE_TOOLS
         assert "run_command" in DESTRUCTIVE_TOOLS
+        assert "apply_patch" in DESTRUCTIVE_TOOLS
+        assert "vision_analyze" in DESTRUCTIVE_TOOLS
         assert "read_file" not in DESTRUCTIVE_TOOLS
 
     def test_retry_config(self):
@@ -104,6 +112,13 @@ class TestConstants:
         for endpoint_id, info in API_ENDPOINTS.items():
             assert "base_url" in info
             assert info["base_url"].startswith("https://")
+
+    def test_generation_profiles_adjust_one_sampling_control(self):
+        assert GENERATION_PROFILES["balanced"]["temperature"] is None
+        assert GENERATION_PROFILES["balanced"]["top_p"] is None
+        for profile in ("precise", "exploratory"):
+            info = GENERATION_PROFILES[profile]
+            assert sum(info[key] is not None for key in ("temperature", "top_p")) == 1
 
 
 class TestApiKey:

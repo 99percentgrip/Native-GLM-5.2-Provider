@@ -14,7 +14,9 @@ streaming, 1M context, and auto-continuation for long generations.
 - **CLI and terminal auth**: `cli.py` → `main()` / `configure_credentials()`
 - **Frozen executable entry**: `launcher.py` → absolute import of `cli.main()`
 - **ACP protocol**: `agent.py` — implements `acp.Agent` (initialize, new_session, load_session, resume_session, close_session, list_sessions, prompt, set_config_option, set_session_mode)
-- **GLM API client**: `glm_client.py` — SSE streaming, reasoning/content separation, tool_call assembly, auto-continuation
+- **GLM API client**: `glm_client.py` — SSE/tool streaming, preserved thinking, cancellation, retry, cache usage, auto-continuation
+- **MCP**: `mcp.py` — official Z.ai remote/local services and configured HTTP/stdio servers
+- **Project knowledge**: `memory.py` — root instructions and opt-in project-local memory
 - **Tools**: `tools.py` — file/shell operations sandboxed to workspace roots
 - **Config**: `config.py` — model registry, API key, constants
 - **Persistence**: `session_store.py` — JSON file store for conversation state in `~/.glm-acp/sessions/`
@@ -95,6 +97,7 @@ Session config options advertised to the client:
 - `model` (category: `model`) — GLM model selector
 - `thought_level` (category: `thought_level`) — reasoning depth: Off / Standard (all models); Deep · High / Deep · Max (GLM-5.2 only, maps to `reasoning_effort: high|max`)
 - `permission_mode` (category: `permissions`) — tool execution permission: Ask / Read Only / Bypass
+- `generation_profile` (category: `other`) — Balanced provider defaults, Precise temperature 0.7, or Exploratory top-p 0.98; non-default profiles adjust only one sampling control
 
 ### Deep Thinking (GLM-5.2)
 
@@ -104,13 +107,15 @@ both `thinking.type` and `reasoning_effort` in the API request body. When the
 model is switched away from GLM-5.2, deep levels are hidden and the thought
 level falls back to Standard automatically.
 
-Deep High/Max requests set `thinking.clear_thinking=false`, and exact returned
-`reasoning_content` is retained in assistant history as required for subsequent
-requests. Standard and disabled modes do not persist reasoning traces.
+Coding Plan Standard and Deep High/Max requests set
+`thinking.clear_thinking=false`, and exact returned `reasoning_content` is
+retained in assistant history as required for subsequent requests. Disabled
+thinking and Standard API standard reasoning clear prior traces.
 
 ### Permission system
 
-Destructive tools (`write_file`, `edit_file`, `run_command`) are gated by the
+Destructive tools (`write_file`, `edit_file`, `apply_patch`, `run_command`,
+`store_memory`, generic/local MCP execution) are gated by the
 session's `permission_mode`:
 - **Ask** — read-only tools run freely; destructive tools trigger a
   `session/request_permission` round-trip so Zed can show an approval dialog
@@ -136,9 +141,10 @@ When a user pastes a screenshot from the clipboard:
    note that GLM-5.2 cannot view images directly
 4. The user is notified in the panel where the screenshot was saved
 
-This prevents the "prompt parameter was not received normally" (1213)
-crash and preserves the screenshot for use with the Z.ai Vision MCP Server
-or manual inspection.
+This prevents the "prompt parameter was not received normally" (1213) crash
+and preserves the screenshot for the built-in permission-gated Z.ai Vision MCP
+tool or manual inspection. GLM-5V-Turbo is available for direct multimodal use
+on Standard API and BigModel with a 200K context window.
 
 ### Sandbox
 
@@ -148,12 +154,24 @@ Text-file tools decode strict UTF-8 with universal-newline normalization and
 consistently treat invalid UTF-8 or NUL-containing data as binary on every
 supported platform.
 
-Filesystem tools run off the ACP event-loop thread. Read/search calls in the
+Filesystem tools run off the ACP event-loop thread. Search uses `rg` when
+available with a portable fallback. Read/search calls in the
 same model batch may execute concurrently, while edits and commands remain
 ordered. Tool and embedded-resource output is bounded; truncated file reads
-include a `start_line` continuation hint. Command results always include the
-exit code and independently bounded stdout/stderr so silent failures remain
-visible without unbounded memory growth.
+include a `start_line` continuation hint. Command output streams live, final
+results include the exit code and bounded stdout/stderr, and timeouts terminate
+the complete process group.
+
+### MCP and durable memory
+
+Z.ai Search and Reader use authenticated Streamable HTTP MCP. Vision uses the
+official optional `@z_ai/mcp-server@latest` stdio server and therefore requires
+Node.js 22+; starting it is permission-gated. Custom MCP servers come from the
+user-only `mcp.json` and may reference environment variables for headers.
+
+Root `AGENTS.md`, `CLAUDE.md`, and `GLM.md` are loaded into the managed system
+prompt. Reusable knowledge is opt-in and stored only after permission in the
+workspace's `.glm-acp/memory.md`; secrets and transient reasoning must not be stored.
 
 ### Session persistence & history replay
 
@@ -195,15 +213,20 @@ The server runs with `use_unstable_protocol=True` to expose
 .venv/bin/python3 -c "from glm_acp.agent import GlmAcpAgent; print('OK')"
 
 # ACP handshake test (no real API key needed)
-ZAI_API_KEY=test .venv/bin/python3 -c "
+ZAI_API_KEY=test GLM_ACP_SESSION_PERSISTENCE=0 .venv/bin/python3 -c "
 from glm_acp.agent import GlmAcpAgent
 import asyncio
+class ClientStub:
+    async def session_update(self, **kwargs):
+        pass
 agent = GlmAcpAgent()
+agent.on_connect(ClientStub())
 r = asyncio.run(agent.initialize(protocol_version=1))
 assert r.protocol_version == 1
 s = asyncio.run(agent.new_session(cwd='/tmp'))
 assert s.config_options[0].category == 'model'
 assert s.config_options[1].category == 'thought_level'
+asyncio.run(agent.aclose())
 print('Handshake OK')
 "
 ```

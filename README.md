@@ -11,7 +11,7 @@ subprocess inside Zed's Agent Panel — no Zed recompilation required.
 
 ### Core
 
-- **1M context window** — native Z.ai API, no context cap
+- **GLM-5.2 1M context window** — model-aware compaction uses documented limits for every model
 - **Live reasoning traces** — `reasoning_content` streams into Zed's thinking view
 - **No mid-generation stalls** — auto-continues on `finish_reason=length`
 - **Usage reporting** — live token usage in Zed's context bar
@@ -21,8 +21,8 @@ subprocess inside Zed's Agent Panel — no Zed recompilation required.
 
 ### API Resilience
 
-- **Automatic retry** — exponential backoff (1s → 2s → 4s) on 429/500/502/503/504 and network errors
-- **Cost tracking** — cumulative input/output tokens per session, shown in `/status`
+- **Automatic retry** — honors `Retry-After`, then uses capped jittered backoff on transient failures
+- **Cost and cache tracking** — cumulative input/output/cached tokens per session, shown in `/status`
 - **Real cancellation** — the Cancel button actually aborts in-flight API requests
 - **Token estimation** — calibrated 3.5 chars/token heuristic, handles vision content blocks
 
@@ -32,10 +32,11 @@ All configurable from the Zed agent panel — no restart needed:
 
 | Option | Values | Description |
 |---|---|---|
-| **Model** | GLM-5.2, GLM-5-Turbo, GLM-4.7 (+ vision on Standard/BigModel) | Model list syncs to the selected API plan |
+| **Model** | GLM-5.2, GLM-5-Turbo, GLM-4.7 (+ GLM-5V-Turbo and vision models on Standard/BigModel) | Model list syncs to the selected API plan |
 | **Reasoning** | Off, Standard, Deep · High, Deep · Max | Deep levels are GLM-5.2 exclusive |
 | **API Plan** | Coding Plan, Standard API, BigModel (CN) | Switch endpoints; vision models appear on Standard/BigModel |
 | **Permissions** | Ask, Read Only, Bypass | Gate destructive tools (write/edit/run) |
+| **Generation Style** | Balanced, Precise, Exploratory | Provider defaults, lower-temperature precision, or broader nucleus sampling |
 
 ### Slash Commands
 
@@ -64,11 +65,38 @@ The system prompt auto-detects your project on session creation:
 - **Frameworks:** Next.js, React, Vue
 - **Package managers:** uv, Poetry, npm, Yarn, pnpm
 - **VCS:** git detection
+- **Instructions:** root `AGENTS.md`, `CLAUDE.md`, and `GLM.md` are loaded into the system prompt
+- **Memory:** approved reusable facts can be stored in `.glm-acp/memory.md`
 
 ### Search Quality
 
-`search_files` and `grep` respect `.gitignore` patterns and always skip
+`search_files` and `grep` use ripgrep when available, respect `.gitignore`, bound
+their output, and always skip
 `.git`, `node_modules`, `__pycache__`, `.venv`, `dist`, `build`.
+
+### Z.ai MCP
+
+The agent includes stable tools for the official Coding Plan Web Search and Web
+Reader remote MCP services. It also supports the local Z.ai Vision MCP server
+and arbitrary user-configured Streamable HTTP or stdio MCP servers.
+
+Vision MCP is optional and requires Node.js 22+ with `npx` on `PATH`; the first
+call asks for permission before starting `@z_ai/mcp-server@latest`. Custom MCP
+servers can be added to the user-only `mcp.json` beside `credentials.json`:
+
+```json
+{
+  "servers": {
+    "docs": {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer ${DOCS_MCP_TOKEN}"}
+    }
+  }
+}
+```
+
+Keep credentials in environment variables, not in this file. The built-in Z.ai
+servers reuse the existing API key without printing or persisting it.
 
 ## Install
 
@@ -147,9 +175,10 @@ entry from the earlier setup style.
 | Model | Context | Plans | Use case |
 |---|---|---|---|
 | GLM-5.2 (Flagship) | 1M | All | Maximum reasoning, coding, agentic tasks (default) |
-| GLM-5-Turbo | 1M | All | Flagship optimized for speed |
-| GLM-4.7 | 1M | All | Balanced daily development |
-| GLM-4.5V (Vision) | 128K | Standard, BigModel | Screenshots, diagrams, charts |
+| GLM-5-Turbo | 200K | All | Flagship optimized for speed |
+| GLM-4.7 | 200K | All | Balanced daily development |
+| GLM-5V-Turbo | 200K | Standard, BigModel | Multimodal coding and agent workflows |
+| GLM-4.5V (Vision) | 64K | Standard, BigModel | Screenshots, diagrams, charts |
 | GLM-4.6V (Vision) | 128K | Standard, BigModel | Newer vision model with improved OCR |
 
 ## API Plans
@@ -160,7 +189,12 @@ entry from the earlier setup style.
 | Standard API | `api.z.ai/api/paas/v4` | Pay-as-you-go — text + vision models |
 | BigModel (CN) | `open.bigmodel.cn/api/paas/v4` | Chinese mainland endpoint |
 
-Vision model support requires Standard API or BigModel with sufficient balance.
+Direct vision model support requires Standard API or BigModel with sufficient
+balance. Coding Plan users can use the separate official Vision MCP capability.
+
+Z.ai's published supported-tool list does not currently name this Zed ACP
+integration. Coding Plan availability is therefore subject to Z.ai's current
+tool eligibility and usage policy; Standard API remains available independently.
 
 ## Architecture
 
@@ -172,6 +206,8 @@ glm_acp/
 ├── agent.py         # ACP agent: session lifecycle, prompt loop, slash commands
 ├── config.py        # Model registry, API endpoints, constants
 ├── glm_client.py    # Streaming Z.ai API client (SSE, retry, reasoning, tools)
+├── mcp.py           # Z.ai and user-configured MCP transports
+├── memory.py        # Project instructions and opt-in durable memory
 ├── session_store.py # Persistent JSON session storage (~/.glm-acp/sessions/)
 └── tools.py         # File/shell/search tools sandboxed to workspace roots
 ```
@@ -201,9 +237,15 @@ When token usage exceeds **85%** of the context window:
 ### Session persistence
 
 - State saved to `~/.glm-acp/sessions/<session-id>.json` after every turn
+- Session directories/files are created with user-only permissions on POSIX
 - On restart, `load_session` / `resume_session` replays history + plan + config
 - Sessions listed in Zed's history sidebar via `session/list`
 - Fork support: duplicate a session to experiment with different approaches
+
+Set `GLM_ACP_SESSION_PERSISTENCE=0` to keep sessions process-local. Set
+`GLM_ACP_PERSIST_REASONING=0` to persist messages without exact reasoning
+traces; active Coding Plan turns still retain them in memory as required for
+preserved-thinking requests.
 
 ## Tools
 
@@ -212,11 +254,16 @@ When token usage exceeds **85%** of the context window:
 | `read_file` | Read file contents (with optional line range) |
 | `write_file` | Create or overwrite a file |
 | `edit_file` | Find-and-replace a unique text block |
+| `apply_patch` | Atomically apply validated unified-diff hunks |
 | `list_directory` | List directory entries |
 | `search_files` | Glob pattern search (`.gitignore`-aware) |
 | `grep` | Regex content search (`.gitignore`-aware) |
-| `run_command` | Shell execution for builds, tests, git |
+| `run_command` | Live, bounded shell output; timeouts kill the process tree |
 | `update_plan` | Create/update the task plan checklist |
+| `recall_memory` / `store_memory` | Read or permission-gate durable project knowledge |
+| `web_search` / `web_reader` | Official Z.ai Coding Plan MCP services |
+| `vision_analyze` | Optional official local Z.ai Vision MCP |
+| `mcp_list_tools` / `mcp_call` | Generic configured MCP access |
 
 All file paths are validated against workspace roots. `update_plan` is
 available in both Ask and Code modes.
@@ -230,7 +277,18 @@ cd /path/to/glm-acp
 
 Release verification also builds the wheel, source distribution, and frozen
 PyInstaller executable. GitHub Actions runs the test suite and frozen-binary
-smoke test on Linux, macOS x86-64, and Windows x86-64.
+smoke test on Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64.
+
+Opt-in live quality evaluation uses isolated fixtures and objective test results:
+
+```bash
+.venv/bin/python3 benchmarks/eval.py --list
+.venv/bin/python3 benchmarks/eval.py --runner native
+```
+
+An external agent can be compared on the same corpus with `--runner external
+--external-command <command...>`; the prompt is sent on stdin and no credential
+or reasoning data is included in the JSON report.
 
 ## Troubleshooting
 
@@ -250,7 +308,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-0.2.1.dist-info  (and editable-install metadata)
+# expect: glm_acp-0.3.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
@@ -266,7 +324,7 @@ balance on your Z.ai account.
 
 ### Rate limit errors (429)
 
-The agent automatically retries with exponential backoff (3 attempts). If
+The agent automatically retries with provider-directed or jittered backoff (3 attempts). If
 errors persist, the model will receive the error and can inform the user.
 
 ## License

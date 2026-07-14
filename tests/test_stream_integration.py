@@ -57,6 +57,7 @@ class MockStreamResponse:
         self._lines = lines
         self.status_code = status_code
         self._body = b"".join(lines)
+        self.headers = {}
 
     async def aread(self) -> bytes:
         return self._body
@@ -185,6 +186,31 @@ class TestStreamContent:
 
 
 class TestStreamReasoning:
+    @pytest.mark.asyncio
+    async def test_tools_enable_provider_tool_streaming(self):
+        lines = [
+            _sse_line(_sse_chunk(content="answer", finish="stop")),
+            _sse_line("[DONE]"),
+        ]
+        client = _make_client(lines)
+        result = StreamResult()
+        await client._do_stream_request([], [{"type": "function"}], result, None, None, None)
+        assert client._client.requests[0]["json"]["tool_stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_sampling_profile_adds_only_selected_parameter(self):
+        lines = [
+            _sse_line(_sse_chunk(content="answer", finish="stop")),
+            _sse_line("[DONE]"),
+        ]
+        client = _make_client(lines)
+        client.temperature = 0.7
+        result = StreamResult()
+        await client._do_stream_request([], [], result, None, None, None)
+        body = client._client.requests[0]["json"]
+        assert body["temperature"] == 0.7
+        assert "top_p" not in body
+
     @pytest.mark.asyncio
     async def test_deep_reasoning_preserves_history_in_request(self):
         lines = [

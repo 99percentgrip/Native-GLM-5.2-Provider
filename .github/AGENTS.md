@@ -15,7 +15,7 @@ Own continuous verification and reproducible cross-platform release publication.
 - A `vX.Y.Z` tag must exactly match `glm_acp.__version__`.
 - The declared Python 3.10+ compatibility range must be tested through Python 3.13.
 - Release archives must match the filenames in `registry/agent.json`.
-- Linux, macOS x86-64, and Windows x86-64 artifacts must each run `--version` before publication.
+- Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64 artifacts must each run `--version` before publication.
 - Each frozen executable must remain below the 30 MiB release-size ceiling.
 - Published archives receive SHA-256 files and GitHub build-provenance attestations.
 - Build Python distributions before downloading frozen-binary artifacts so temporary
