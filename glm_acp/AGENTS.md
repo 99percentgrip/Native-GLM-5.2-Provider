@@ -22,6 +22,7 @@ streaming, 1M context, and auto-continuation for long generations.
 - **Tools**: `tools.py` — file/shell operations sandboxed to workspace roots
 - **Config**: `config.py` — model registry, API key, constants
 - **Persistence and recall**: `session_store.py` — JSON conversation state plus a local redacted SQLite FTS5 search index
+- **Scheduled automation**: `cron.py`, `cron_scheduler.py`, and `cron_cli.py` — persistent jobs, isolated execution, claims, artifacts, and CLI lifecycle
 
 ### Entry point resolution
 
@@ -169,6 +170,15 @@ session's `permission_mode`:
 - **Bypass** — all tools auto-approved, no prompts
 
 Permission state is stored per-session and persisted to disk.
+
+### Scheduled automation
+
+- `cronjob` is one stable permission-gated tool for create/list/update/pause/resume/run/remove; scheduled sessions cannot call it recursively.
+- Jobs persist in the user configuration directory with user-only permissions and accept relative one-shots, intervals, strict five-field cron, or aware ISO timestamps.
+- Every dispatch is atomically claimed across processes. Healthy long runs renew their claim, missed recurring slots collapse to one future slot, and stale claims remain recoverable.
+- Runs use fresh non-persisted sessions, project context, optional learned skills/bundles, a 600-second inactivity watchdog by default, and bounded redacted result artifacts. `[SILENT]` suppresses live delivery but not history.
+- Script prechecks are workspace-contained, non-symlink files with scrubbed environments, bounded output, and a 60-second timeout. Script-only jobs make no model request.
+- The ACP process starts a background ticker and `glm-acp cron daemon` provides a dedicated foreground scheduler. Multiple tickers are safe; running jobs may be paused for future runs but cannot be updated or removed until completion.
 
 ### Image / screenshot handling
 

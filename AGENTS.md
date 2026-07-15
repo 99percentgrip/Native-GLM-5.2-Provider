@@ -98,8 +98,8 @@ This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM
 
 ## Current Project Status
 
-- Package and ACP implementation version is `0.8.0` from `glm_acp.__version__`.
-- GitHub release `v0.8.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `0.9.0` from `glm_acp.__version__`.
+- GitHub release `v0.9.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - Public frozen binaries support one-command removal of installer-owned commands, PATH markers, and matching custom Zed configuration with an automatic settings backup.
@@ -117,6 +117,7 @@ This project implements a native ACP (Agent Client Protocol) server for Z.ai GLM
 - Repeated identical tool batches are interrupted before the 50-iteration ceiling, malformed JSON arguments receive corrective feedback, edited files require a successful verification command before normal completion, and shell tools do not inherit common credential environment variables.
 - Expired MCP HTTP sessions and restarted stdio servers reinitialize automatically with per-server initialization locking.
 - The opt-in quality harness provides 11 outcome-based Python, TypeScript, Go, and Rust cases plus a credential-safe one-command runner with single-run locking, visible progress, and incremental JSON/Markdown handoff reports; live runs remain outside ordinary CI.
+- Persistent scheduled automation supports relative one-shots, intervals, timezone-aware five-field cron, and aware ISO timestamps; permission-gated management, fresh non-persisted runs, skills/bundles, script prechecks, script-only mode, `[SILENT]`, renewable cross-process claims, and bounded redacted artifacts are available through ACP and `glm-acp cron`.
 
 ## Install and distribution (binding)
 
@@ -139,7 +140,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-0.8.0.dist-info
+# expect: editable glm_acp metadata and glm_acp-0.9.0.dist-info
 ```
 
 ## Verification

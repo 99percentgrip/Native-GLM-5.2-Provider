@@ -117,7 +117,7 @@ jobs:
             id: "native-glm-acp",
             name: "Native GLM ACP",
             version: $version,
-            description: "Native GLM ACP with 1M context, promptware defense, structured compaction, evidence-gated learning, bounded delegation, and no Python runtime.",
+            description: "Native GLM ACP with 1M context, secure scheduled automation, structured compaction, evidence-gated learning, bounded delegation, and no Python runtime.",
             repository: $repository,
             website: $repository,
             authors: ["Aleksejs Kozlitins"],

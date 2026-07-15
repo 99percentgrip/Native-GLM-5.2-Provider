@@ -261,6 +261,7 @@ DESTRUCTIVE_TOOLS = frozenset(
         "manage_skill_bundle",
         "evolve_skill",
         "delegate_task",
+        "cronjob",
         "mcp_call",
         "mcp_list_tools",
         "vision_analyze",

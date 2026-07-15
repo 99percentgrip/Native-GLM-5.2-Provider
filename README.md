@@ -22,6 +22,7 @@ subprocess inside Zed's Agent Panel — no Zed recompilation required.
 - **Measured learning loop** — relevant skills, bundles, and benchmark-gated candidates improve without silent promotion
 - **Promptware defense** — stored context and untrusted tool/MCP/recall output are scanned and delimited
 - **Bounded delegation** — permission-gated read-only GLM workers investigate or review with strict budgets
+- **Persistent scheduled automation** — one-shot, interval, timezone-aware cron, and ISO jobs run in isolated sessions with durable history
 
 ### API Resilience
 
@@ -69,6 +70,54 @@ Type these in the chat input:
 For any task with 3+ steps, the model automatically creates a live todo list
 visible as a checklist in the panel. Each task shows pending / in-progress /
 completed status with priority indicators.
+
+### Scheduled Automation
+
+Native GLM ACP includes Hermes-style persistent cron jobs. The agent can create,
+list, update, pause, resume, run, and remove them through one permission-gated
+`cronjob` tool. Scheduled runs use a fresh, non-persisted conversation, load the
+target project's instructions and optional learned skills/bundles, and cannot
+create more scheduled jobs recursively.
+
+Supported schedules are relative one-shots (`30m` or `in 30m`), recurring
+intervals (`every 2h`), strict five-field cron expressions, and timezone-aware
+ISO timestamps. Named timezones use their daylight-saving rules. Missed
+recurring slots collapse to one run instead of producing a catch-up storm.
+
+```bash
+# Create and inspect jobs
+glm-acp cron create --schedule "0 9 * * 1-5" --timezone Asia/Manila \
+  --workdir /path/to/project --prompt "Review failures and report only new findings"
+glm-acp cron list
+glm-acp cron status
+
+# Manage or test one job
+glm-acp cron update JOB_ID --schedule "every 2h"
+glm-acp cron pause JOB_ID
+glm-acp cron resume JOB_ID
+glm-acp cron run JOB_ID
+glm-acp cron remove JOB_ID
+
+# Script precheck, or script-only monitoring without an API call
+glm-acp cron create --schedule "every 10m" --workdir /path/to/project \
+  --script scripts/healthcheck.py --no-agent
+```
+
+The scheduler runs automatically while a Native GLM ACP process is active.
+For a dedicated long-lived process, use `glm-acp cron daemon`; `cron tick` runs
+one due-job scan for external service managers. Cross-process locks and renewable
+claims prevent duplicate execution. A crashed claim becomes recoverable, while
+long healthy runs refresh ownership. Jobs may return `[SILENT]` to suppress live
+delivery; every result still receives a bounded, redacted local artifact.
+
+Job prompts reject credential-shaped and promptware content. Workdirs and scripts
+must remain inside the recorded workspace, precheck scripts receive a scrubbed
+environment and a 60-second limit, agent runs default to a 600-second inactivity
+limit (`GLM_ACP_CRON_TIMEOUT=0` disables it), and running jobs cannot be updated
+or removed. State is stored with user-only permissions in the platform's Native
+GLM ACP configuration directory. This plugin intentionally delivers to local ACP
+sessions and artifacts; Hermes messaging-channel routing is outside an editor
+ACP server's scope.
 
 ### Project Context
 
@@ -185,10 +234,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v0.8.0` before running the Unix
-installer, or pass `-Version v0.8.0` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v0.9.0` before running the Unix
+installer, or pass `-Version v0.9.0` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v0.8.0](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases/tag/v0.8.0).
+[v0.9.0](https://github.com/99percentgrip/Native-GLM-5.2-Provider/releases/tag/v0.9.0).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -309,6 +358,9 @@ tool eligibility and usage policy; Standard API remains available independently.
 glm_acp/
 ├── __main__.py      # Module entry point — routes through cli.main()
 ├── cli.py           # Console entry point and terminal credential setup
+├── cron.py          # Persistent jobs, schedule parsing, claims, and artifacts
+├── cron_cli.py      # Cron management CLI
+├── cron_scheduler.py # Isolated execution, delivery, ticking, and daemon
 ├── launcher.py      # Frozen-executable entry point
 ├── agent.py         # ACP agent: session lifecycle, prompt loop, slash commands
 ├── config.py        # Model registry, API endpoints, constants
@@ -387,6 +439,7 @@ preserved-thinking requests.
 | `manage_skill_bundle` | Permission-gate creation or removal of project-local bundles |
 | `evolve_skill` | Stage, promote, or discard objectively benchmarked skill candidates |
 | `delegate_task` | Run one permission-gated, read-only auxiliary GLM investigation or review |
+| `cronjob` | Permission-gated persistent scheduled automation and manual runs |
 | `web_search` / `web_reader` | Official Z.ai Coding Plan MCP services |
 | `vision_analyze` | Optional official local Z.ai Vision MCP |
 | `mcp_list_tools` / `mcp_call` | Generic configured MCP access |
@@ -475,7 +528,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-0.8.0.dist-info  (and editable-install metadata)
+# expect: glm_acp-0.9.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials

@@ -17,6 +17,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_security.py` covers promptware detection, stored-context blocking, and untrusted-output delimiters.
 - `test_session_store.py` covers JSON persistence plus redacted FTS5 discovery, scrolling, legacy backfill, and deletion.
 - `test_quality.py` covers tool-loop, failed-verification and unverified-edit recovery, benchmark locking/incremental reports, million-token estimation, and real stdio/SDK ACP process lifecycles.
+- `test_cron.py` covers schedule forms, secure persistence, cross-process claims, mutation safety, script-only runs, CLI/tool management, and daemon lifecycle.
 
 ## Local Contracts
 
@@ -38,6 +39,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - Curator tests must cover manual content drift and evidence-only overlap detection without automatic merging.
 - Session-search tests must prove system/reasoning/credential exclusion and legacy-session coverage.
 - Process-level ACP tests must use test credentials, isolated HOME state, and the official SDK lifecycle helpers where available.
+- Cron tests must isolate the configuration directory, avoid live model calls, and prove claim ownership, secret scrubbing, workspace containment, and clean daemon shutdown.
 
 ## Work Guidance
 

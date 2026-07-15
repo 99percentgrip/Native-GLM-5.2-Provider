@@ -10,6 +10,7 @@ import asyncio
 import copy
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -322,6 +323,7 @@ class Session:
         self.task_context: str = ""
         self.compaction_learning_proposals: list[str] = []
         self.compaction_quality_history: list[dict[str, Any]] = []
+        self.scheduled_run = False
         # Cumulative cost tracking per session
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
@@ -440,8 +442,12 @@ class GlmAcpAgent(acp.Agent):
         self._store = SessionStore()
         self._tool_io_semaphore = asyncio.Semaphore(4)
         self._mcp = McpManager()
+        self._cron_task: asyncio.Task[None] | None = None
+        self._cron_stop: asyncio.Event | None = None
 
     async def _save_session(self, session: Session) -> None:
+        if session.scheduled_run:
+            return
         data = copy.deepcopy(session.to_dict())
         await asyncio.to_thread(self._store.save, session.id, data)
 
@@ -629,6 +635,12 @@ class GlmAcpAgent(acp.Agent):
 
     async def aclose(self) -> None:
         """Close pooled HTTP clients without deleting persisted sessions."""
+        if self._cron_task is not None:
+            if self._cron_stop is not None:
+                self._cron_stop.set()
+            self._cron_task.cancel()
+            await asyncio.gather(self._cron_task, return_exceptions=True)
+            self._cron_task = None
         await asyncio.gather(
             *(self._invalidate_session_client(session) for session in self._sessions.values()),
             return_exceptions=True,
@@ -645,6 +657,15 @@ class GlmAcpAgent(acp.Agent):
         client_info: Any = None,
         **kwargs: Any,
     ) -> InitializeResponse:
+        if self._cron_task is None and os.environ.get("GLM_ACP_CRON_DISABLE") != "1":
+            from .cron_scheduler import CallbackDelivery, daemon
+
+            self._cron_stop = asyncio.Event()
+            delivery = CallbackDelivery(self._deliver_cron_result)
+            self._cron_task = asyncio.create_task(
+                daemon(stop_event=self._cron_stop, delivery=delivery),
+                name="glm-acp-cron",
+            )
         return InitializeResponse(
             protocol_version=protocol_version,
             agent_capabilities=AgentCapabilities(
@@ -1240,6 +1261,8 @@ class GlmAcpAgent(acp.Agent):
         if auxiliary_client is not client:
             auxiliary_client.begin_turn()
         all_tools = TOOL_DEFINITIONS + MCP_TOOL_DEFINITIONS
+        if session.scheduled_run:
+            all_tools = [tool for tool in all_tools if tool["function"]["name"] != "cronjob"]
         tools = (
             all_tools
             if session.mode == "code"
@@ -1506,6 +1529,8 @@ class GlmAcpAgent(acp.Agent):
             for tc in result.tool_calls:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
+                if tool_name == "cronjob":
+                    tool_args = {**tool_args, "_origin_session_id": session.id}
                 tc_id = tc["id"]
 
                 arguments_issue = self._tool_arguments_issue(tool_args)
@@ -1655,6 +1680,9 @@ class GlmAcpAgent(acp.Agent):
                             tool_args,
                             session.sandbox,
                             on_output=on_output,
+                            cron_delivery=(
+                                self._cron_delivery() if tool_name == "cronjob" else None
+                            ),
                         )
                     if tool_name == "evolve_skill" and str(tool_args.get("action", "")) in {
                         "draft",
@@ -2913,6 +2941,16 @@ class GlmAcpAgent(acp.Agent):
         chunk = acp.update_agent_message_text(text)
         await self._conn.session_update(session_id=session_id, update=chunk)
 
+    async def _deliver_cron_result(self, session_id: str, text: str) -> None:
+        """Best-effort live notification only for a currently loaded ACP session."""
+        if session_id in self._sessions:
+            await self._send_message(session_id, f"\n\n**Scheduled task result**\n\n{text}\n")
+
+    def _cron_delivery(self) -> Any:
+        from .cron_scheduler import CallbackDelivery
+
+        return CallbackDelivery(self._deliver_cron_result)
+
     async def _send_user_message(self, session_id: str, text: str) -> None:
         """Echo a user message back to the UI (for slash commands)."""
         chunk = acp.update_user_message_text(text)
@@ -3165,6 +3203,7 @@ class GlmAcpAgent(acp.Agent):
             "manage_skill_bundle": "Managing skill bundle",
             "evolve_skill": "Evaluating skill candidate",
             "delegate_task": "Delegating bounded analysis",
+            "cronjob": "Managing scheduled task",
             "web_search": "Searching the web",
             "web_reader": "Reading web page",
             "vision_analyze": "Analyzing image",

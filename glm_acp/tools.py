@@ -44,6 +44,45 @@ from .memory import (
     write_skill_bundle,
 )
 
+CRONJOB_TOOL_DEFINITION: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "cronjob",
+        "description": (
+            "Permission-gated management for persistent local scheduled tasks. Jobs run in "
+            "fresh sessions and persist results locally. Scheduled runs cannot call this tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "update", "pause", "resume", "run", "remove"],
+                },
+                "job_id": {"type": "string"},
+                "schedule": {
+                    "type": "string",
+                    "description": (
+                        "Delay (30m), interval (every 2h), five-field cron, or aware ISO timestamp"
+                    ),
+                },
+                "prompt": {"type": "string"},
+                "name": {"type": "string"},
+                "timezone": {"type": "string"},
+                "repeat": {"type": "integer", "minimum": 1},
+                "workdir": {"type": "string"},
+                "skills": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+                "bundles": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+                "script": {"type": "string"},
+                "no_agent": {"type": "boolean"},
+                "include_disabled": {"type": "boolean"},
+            },
+            "required": ["action"],
+        },
+    },
+}
+
 MAX_TOOL_OUTPUT_CHARS = 64_000
 _COMMAND_STREAM_LIMIT = MAX_TOOL_OUTPUT_CHARS // 2
 _ALWAYS_IGNORE = [
@@ -161,6 +200,7 @@ def _is_ignored(rel_path: str, patterns: list[str]) -> bool:
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    CRONJOB_TOOL_DEFINITION,
     {
         "type": "function",
         "function": {
@@ -647,6 +687,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 TOOL_KINDS: dict[str, str] = {
+    "cronjob": "edit",
     "read_file": "read",
     "write_file": "edit",
     "edit_file": "edit",
@@ -741,10 +782,13 @@ async def execute_tool(
     arguments: dict[str, Any],
     sandbox: Sandbox,
     on_output: Any = None,
+    cron_delivery: Any = None,
 ) -> ToolResult:
     """Execute a tool call and return a structured result."""
     try:
-        if name == "read_file":
+        if name == "cronjob":
+            return await _cronjob(arguments, sandbox, delivery=cron_delivery)
+        elif name == "read_file":
             return await _read_file(arguments, sandbox)
         elif name == "write_file":
             return await _write_file(arguments, sandbox)
@@ -912,6 +956,86 @@ async def execute_tool(
         raise
     except Exception as e:
         raise ToolError(str(e))
+
+
+async def _cronjob(args: dict[str, Any], sandbox: Sandbox, *, delivery: Any = None) -> ToolResult:
+    from .cron import (
+        create_job,
+        get_job,
+        list_jobs,
+        pause_job,
+        remove_job,
+        resume_job,
+        update_job,
+    )
+    from .cron_scheduler import tick
+
+    action = str(args.get("action", "")).lower()
+    if action == "list":
+        jobs = await asyncio.to_thread(
+            list_jobs, include_disabled=bool(args.get("include_disabled", True))
+        )
+        return ToolResult(output=json.dumps({"jobs": jobs}, ensure_ascii=False, indent=2))
+    if action == "create":
+        if not args.get("schedule"):
+            raise ToolError("schedule is required for create")
+        workdir = sandbox.resolve(str(args.get("workdir") or sandbox.roots[0]))
+        job = await asyncio.to_thread(
+            create_job,
+            schedule=str(args["schedule"]),
+            prompt=str(args.get("prompt", "")),
+            name=args.get("name"),
+            workspace_root=str(sandbox.roots[0]),
+            workdir=str(workdir),
+            timezone_name=str(args.get("timezone") or "UTC"),
+            repeat=args.get("repeat"),
+            skills=args.get("skills"),
+            bundles=args.get("bundles"),
+            script=args.get("script"),
+            no_agent=bool(args.get("no_agent", False)),
+            origin_session_id=args.get("_origin_session_id"),
+        )
+        return ToolResult(output=json.dumps({"job": job}, ensure_ascii=False, indent=2))
+    job_id = str(args.get("job_id") or "")
+    if not job_id:
+        raise ToolError(f"job_id is required for {action}")
+    if action == "pause":
+        job = await asyncio.to_thread(pause_job, job_id)
+    elif action == "resume":
+        job = await asyncio.to_thread(resume_job, job_id)
+    elif action == "remove":
+        removed = await asyncio.to_thread(remove_job, job_id)
+        if not removed:
+            raise ToolError(f"Cron job not found: {job_id}")
+        return ToolResult(output=json.dumps({"removed": job_id}))
+    elif action == "run":
+        if await asyncio.to_thread(get_job, job_id) is None:
+            raise ToolError(f"Cron job not found: {job_id}")
+        result = await tick(job_id=job_id, force=True, delivery=delivery)
+        return ToolResult(output=json.dumps(result))
+    elif action == "update":
+        updates = {
+            key: args[key]
+            for key in (
+                "schedule",
+                "prompt",
+                "name",
+                "timezone",
+                "repeat",
+                "workdir",
+                "skills",
+                "bundles",
+                "script",
+                "no_agent",
+            )
+            if key in args
+        }
+        if "workdir" in updates:
+            updates["workdir"] = str(sandbox.resolve(str(updates["workdir"])))
+        job = await asyncio.to_thread(update_job, job_id, updates)
+    else:
+        raise ToolError(f"Unknown cron action: {action}")
+    return ToolResult(output=json.dumps({"job": job}, ensure_ascii=False, indent=2))
 
 
 async def _read_file(args: dict[str, Any], sandbox: Sandbox) -> ToolResult:

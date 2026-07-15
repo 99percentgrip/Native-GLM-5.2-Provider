@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from . import __version__
 from .agent import run
 from .config import get_api_key, store_api_key
+from .cron_cli import add_cron_parser, run_cron_command
 from .uninstall import UninstallError, uninstall_release
 
 
@@ -60,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --uninstall, also remove the stored Z.ai credential",
     )
     parser.add_argument("--version", action="version", version=__version__)
+    subparsers = parser.add_subparsers(dest="command")
+    add_cron_parser(subparsers)
     return parser
 
 
@@ -68,6 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.purge and not args.uninstall:
         parser.error("--purge requires --uninstall")
+    if args.command == "cron":
+        return run_cron_command(args)
     if args.setup:
         return configure_credentials()
     if args.check_auth:
