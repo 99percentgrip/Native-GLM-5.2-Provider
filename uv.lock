@@ -269,7 +269,7 @@ dependencies = [
     { name = "agent-client-protocol" },
     { name = "croniter" },
     { name = "httpx" },
-    { name = "tzdata" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -293,7 +293,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1,<2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
-    { name = "tzdata", specifier = "==2025.2" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.2" },
 ]
 provides-extras = ["dev"]
 
