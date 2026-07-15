@@ -397,7 +397,7 @@ def list_learned_skills(cwd: str) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "description": description,
-                "path": str(safe.relative_to(workspace)),
+                "path": safe.relative_to(workspace).as_posix(),
                 "state": "archived"
                 if location_state == "archived"
                 else record.get("state", "active"),

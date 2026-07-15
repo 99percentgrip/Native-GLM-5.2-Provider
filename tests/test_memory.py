@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -137,7 +138,7 @@ def test_private_user_profile_round_trip_and_forget(tmp_path, monkeypatch):
     append_user_profile("Prefers concise reports", "preference")
 
     assert read_user_profile().count("Prefers concise reports") == 1
-    if path.stat().st_mode & 0o777:
+    if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
 
     forget_user_profile("Prefers concise reports")
