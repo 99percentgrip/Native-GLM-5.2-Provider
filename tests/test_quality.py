@@ -28,6 +28,8 @@ from benchmarks.run_live import BenchmarkAlreadyRunning, LiveRunLock, process_is
 from glm_acp.agent import GlmAcpAgent, Session
 from glm_acp.glm_client import StreamResult
 from glm_acp.session_store import SessionStore
+from glm_acp.tools import ToolResult
+from glm_acp.tools import execute_tool as real_execute_tool
 
 
 class ScriptedClient:
@@ -235,7 +237,7 @@ async def test_file_change_forces_one_verification_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_successful_verification_clears_unverified_change(tmp_path):
+async def test_successful_verification_clears_unverified_change(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
     (tmp_path / "test_smoke.py").write_text("def test_smoke():\n    assert True\n")
     changed_file = StreamResult(
@@ -274,6 +276,13 @@ async def test_successful_verification_clears_unverified_change(tmp_path):
     session = Session("verified-change", str(tmp_path))
     session.permission_mode = "bypass"
 
+    async def execute_with_passing_verifier(name, arguments, sandbox, **kwargs):
+        if name == "run_command":
+            return ToolResult(output="Exit code: 0\n\nStdout:\n1 passed", exit_code=0)
+        return await real_execute_tool(name, arguments, sandbox, **kwargs)
+
+    monkeypatch.setattr("glm_acp.agent.execute_tool", execute_with_passing_verifier)
+
     assert await agent._run_turn(session) == "end_turn"
     assert client.calls == 4
     assert not any(
@@ -287,7 +296,7 @@ async def test_successful_verification_clears_unverified_change(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_verified_task_can_learn_project_skill(tmp_path):
+async def test_verified_task_can_learn_project_skill(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
     (tmp_path / "test_smoke.py").write_text("def test_smoke():\n    assert True\n")
     def tool_call(call_id: str, name: str, arguments: dict) -> StreamResult:
@@ -324,6 +333,13 @@ async def test_verified_task_can_learn_project_skill(tmp_path):
     agent = configured_agent(client)
     session = Session("learning", str(tmp_path))
     session.permission_mode = "bypass"
+
+    async def execute_with_passing_verifier(name, arguments, sandbox, **kwargs):
+        if name == "run_command":
+            return ToolResult(output="Exit code: 0\n\nStdout:\n1 passed", exit_code=0)
+        return await real_execute_tool(name, arguments, sandbox, **kwargs)
+
+    monkeypatch.setattr("glm_acp.agent.execute_tool", execute_with_passing_verifier)
 
     assert await agent._run_turn(session) == "end_turn"
     assert (tmp_path / ".glm-acp/skills/verify-client/SKILL.md").is_file()
