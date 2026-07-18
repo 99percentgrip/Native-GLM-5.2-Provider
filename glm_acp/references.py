@@ -212,31 +212,38 @@ def _symbol(root: Path, symbol: str, terms: set[str]) -> tuple[str, list[str]]:
         raise ToolError(f"Invalid symbol reference: {symbol}")
     leaf = symbol.split(".")[-1]
     rg = which("rg")
-    if not rg:
-        return f"Symbol lookup unavailable: ripgrep is not installed ({symbol})", []
-    result = subprocess.run(
-        [
-            rg,
-            "-l",
-            "--fixed-strings",
-            "--glob",
-            "!**/.git/**",
-            "--glob",
-            "!**/node_modules/**",
-            leaf,
-            ".",
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=10,
-        check=False,
-    )
+    if rg:
+        result = subprocess.run(
+            [
+                rg,
+                "-l",
+                "--fixed-strings",
+                "--glob",
+                "!**/.git/**",
+                "--glob",
+                "!**/node_modules/**",
+                leaf,
+                ".",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        matching_paths = [(root / relative).resolve() for relative in result.stdout.splitlines()]
+    else:
+        matching_paths = []
+        for path in _candidate_files(root):
+            try:
+                if leaf in _text(path, 32_000):
+                    matching_paths.append(path.resolve())
+            except OSError:
+                continue
     changed = _changed_paths(root)
     candidates: list[tuple[tuple[int, str], Path]] = []
-    for relative in result.stdout.splitlines()[:MAX_RANK_CANDIDATES]:
-        path = (root / relative).resolve()
+    for path in matching_paths[:MAX_RANK_CANDIDATES]:
         try:
             path.relative_to(root)
         except ValueError:

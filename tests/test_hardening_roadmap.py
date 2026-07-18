@@ -127,7 +127,8 @@ async def test_agent_worker_promotion_requires_fresh_isolated_verification(tmp_p
     await agent.aclose()
 
 
-def test_language_aware_references_rank_definitions_and_task_files(tmp_path):
+def test_language_aware_references_rank_definitions_and_task_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("glm_acp.references.which", lambda _name: None)
     (tmp_path / "unrelated.py").write_text("def noise():\n    return 1\n")
     (tmp_path / "caller.py").write_text(
         "from service import PaymentService\n\ndef use():\n    return PaymentService()\n"
