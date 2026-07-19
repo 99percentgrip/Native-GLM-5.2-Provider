@@ -89,7 +89,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - Awareness remains bounded and inspectable: typed epistemic records cite only harness-issued metadata evidence; relevant edits invalidate support; active contradictions and unsupported criteria block persistent-goal completion before the auxiliary judge; no chain-of-thought is stored.
 - Metacognitive control remains deterministic and advisory: uncertainty classes and execution modes derive from inspectable runtime facts; aggregate capability profiles are metadata-only and profile-isolated; empirical history may raise assurance but never expand permissions, authorize workers, change trusted policy, or store reasoning.
 - Grounded deliberation remains evidence-only and bounded: an isolated thinking-disabled critic receives only objectives, a credential-redacted diff, fresh harness evidence, hypothesis outcomes, and completion metadata; ambiguous diagnosis uses two or three falsifiable alternatives with fresh evidence-backed tests; value-of-information ranking is advisory and cannot bypass permissions or policy.
-- Advanced execution remains declarative and fail-closed: checkpoints are conflict-aware and secret-safe; context references are bounded and language-ranked; policy rules inspect nested workflow steps; worker promotion is verification- and digest-gated with transactional rollback; profiles isolate user state; plugin packages are permission-scoped, data-only, hash-pinned, and optionally require trusted Ed25519 publishers.
+- Advanced execution remains declarative and fail-closed: checkpoints are conflict-aware, secret-safe, and profile-configurable within hard bounds; context references are bounded and language-ranked; policy rules inspect nested workflow steps; worker promotion is verification- and digest-gated with transactional rollback; profiles isolate user state; plugin packages are permission-scoped, data-only, hash-pinned, and optionally require trusted Ed25519 publishers.
 - Quality evidence remains private and reproducible: failure drafts contain metadata only until explicitly promoted into outcome-based cases; local observability never stores bodies or raw identities; fuzzing and fault injection run offline and deterministically.
 
 ## Project Purpose
@@ -104,8 +104,8 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 
 ## Current Project Status
 
-- Package and ACP implementation version is `1.6.0` from `glm_acp.__version__`.
-- GitHub release `v1.6.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `1.6.1` from `glm_acp.__version__`.
+- GitHub release `v1.6.1` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - Public frozen binaries support one-command removal of installer-owned commands, PATH markers, and matching custom Zed configuration with an automatic settings backup.
@@ -129,7 +129,7 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 - Installed language servers provide read-only semantic navigation, transactional hash-pinned multi-file patches commit all-or-nothing, and bounded batch reads reduce tool round trips without arbitrary code execution.
 - Stable managed-prompt prefixes expose cache-hit ratios; metadata-only redacted trajectories and hash-pinned lifecycle hooks add evidence and policy without storing prompts, outputs, commands, reasoning, credentials, or raw session IDs.
 - Permission-gated isolated Playwright MCP supplies accessibility, console, network, screenshot, and interaction evidence without arbitrary browser JavaScript evaluation or inherited credentials.
-- Bounded secret-safe checkpoints precede workspace mutations; exact post-agent hashes make `/rollback` stop on later conflicts instead of overwriting them.
+- Bounded secret-safe checkpoints precede workspace mutations; `/checkpoint limits` persists profile-isolated file/MiB ceilings with bounded environment overrides, and exact post-agent hashes make `/rollback` stop on later conflicts instead of overwriting them.
 - Explicit `@file:`, `@folder:`, `@symbol:`, and `@diff` references stay workspace-contained, bounded, secret-aware, and delimited as untrusted context.
 - Ordered repository policy rules, static dependency workflows, optional Bubblewrap isolation, detached worktree implementation workers, named user profiles, and permission-scoped hash-pinned data-only plugin packages provide safe extensibility without arbitrary orchestration code or automatic merges.
 - Cross-platform containment capability-detects Linux Bubblewrap and macOS Seatbelt, adds Windows process-tree Job Objects without treating them as filesystem isolation, and keeps required mode fail-closed.
@@ -162,7 +162,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-1.6.0.dist-info
+# expect: editable glm_acp metadata and glm_acp-1.6.1.dist-info
 ```
 
 ## Verification

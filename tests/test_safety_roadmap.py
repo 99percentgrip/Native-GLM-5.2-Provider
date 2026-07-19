@@ -7,11 +7,12 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from glm_acp.agent import GlmAcpAgent, Session
-from glm_acp.checkpoints import CheckpointManager
+from glm_acp.checkpoints import CheckpointError, CheckpointManager
 from glm_acp.config import config_dir
 from glm_acp.os_sandbox import command_prefix
 from glm_acp.plugins import PluginError, PluginRegistry
@@ -70,6 +71,59 @@ def test_checkpoint_never_copies_sensitive_files(tmp_path):
     assert "SECRET=value" not in "".join(
         path.read_text(errors="ignore") for path in stored if path.is_file()
     )
+
+
+def test_checkpoint_limits_are_persistent_bounded_and_overridable(tmp_path, monkeypatch):
+    limits_path = tmp_path / "profile" / "checkpoint-limits.json"
+    manager = CheckpointManager(tmp_path / "checkpoints", limits_path)
+    assert (manager.limits().max_files, manager.limits().max_mib) == (20_000, 250)
+
+    configured = manager.configure_limits(1, 1)
+    assert configured.files_source == configured.mib_source == "profile"
+    restored = CheckpointManager(tmp_path / "other-checkpoints", limits_path).limits()
+    assert (restored.max_files, restored.max_mib) == (1, 1)
+
+    workspace = tmp_path / "workspace-limits"
+    workspace.mkdir()
+    (workspace / "one.txt").write_text("one")
+    (workspace / "two.txt").write_text("two")
+    with pytest.raises(CheckpointError, match="/checkpoint limits"):
+        manager.create(str(workspace))
+
+    monkeypatch.setenv("GLM_ACP_CHECKPOINT_MAX_FILES", "2")
+    monkeypatch.setenv("GLM_ACP_CHECKPOINT_MAX_MIB", "2")
+    effective = manager.limits()
+    assert (effective.max_files, effective.max_mib) == (2, 2)
+    assert effective.files_source == effective.mib_source == "environment"
+    assert manager.create(str(workspace))["files"] == 2
+
+    with pytest.raises(CheckpointError, match="1 to 1000000"):
+        manager.configure_limits(1_000_001, 1)
+    monkeypatch.setenv("GLM_ACP_CHECKPOINT_MAX_FILES", "invalid")
+    with pytest.raises(CheckpointError, match="GLM_ACP_CHECKPOINT_MAX_FILES"):
+        manager.limits()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_limits_command_is_easy_to_change_and_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("GLM_ACP_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv("GLM_ACP_CHECKPOINT_MAX_FILES", raising=False)
+    monkeypatch.delenv("GLM_ACP_CHECKPOINT_MAX_MIB", raising=False)
+    agent = GlmAcpAgent()
+    agent._save_session = AsyncMock()
+    limits_path = tmp_path / "profile" / "checkpoint-limits.json"
+    agent._checkpoints = CheckpointManager(tmp_path / "checkpoints", limits_path)
+    session = Session("checkpoint-limits", str(tmp_path / "workspace"))
+
+    saved = await agent._handle_command(session, "/checkpoint limits 100000 1024")
+    assert "100,000 files" in saved
+    assert "1,024 MiB" in saved
+    shown = await agent._handle_command(session, "/checkpoint limits")
+    assert "100,000" in shown and "profile" in shown
+    reset = await agent._handle_command(session, "/checkpoint limits reset")
+    assert "20,000 files / 250 MiB" in reset
+    assert not limits_path.exists()
+    await agent.aclose()
 
 
 def test_explicit_references_are_bounded_and_untrusted(tmp_path):

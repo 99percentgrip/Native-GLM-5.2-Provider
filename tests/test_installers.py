@@ -19,7 +19,7 @@ def _fake_unix_release(tmp_path: Path, checksum: str | None = None) -> Path:
     download = tmp_path / "releases" / "latest" / "download"
     download.mkdir(parents=True)
     executable = tmp_path / "native-glm-acp"
-    executable.write_text("#!/bin/sh\nprintf '1.6.0\\n'\n", encoding="utf-8")
+    executable.write_text("#!/bin/sh\nprintf '1.6.1\\n'\n", encoding="utf-8")
     executable.chmod(0o755)
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -61,7 +61,7 @@ def test_unix_installer_verifies_and_installs_both_commands(tmp_path):
     assert (install_dir / "glm-acp").is_symlink()
     assert os.readlink(install_dir / "glm-acp") == "native-glm-acp"
     assert subprocess.check_output([install_dir / "glm-acp", "--version"], text=True).strip() == (
-        "1.6.0"
+        "1.6.1"
     )
     assert "Next: glm-acp --setup" in result.stdout
 

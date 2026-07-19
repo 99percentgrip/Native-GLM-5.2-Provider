@@ -3900,7 +3900,7 @@ class GlmAcpAgent(acp.Agent):
             ),
             AvailableCommand(
                 name="checkpoint",
-                description="Create or list bounded workspace safety checkpoints",
+                description="Create/list checkpoints or configure their file and MiB limits",
             ),
             AvailableCommand(
                 name="rollback",
@@ -3953,6 +3953,46 @@ class GlmAcpAgent(acp.Agent):
                     "🛟 **Workspace Checkpoints**\n```json\n"
                     + json.dumps(checkpoints, ensure_ascii=False, indent=2)[:8000]
                     + "\n```"
+                )
+            if argument.lower() == "limits":
+                try:
+                    limits = await asyncio.to_thread(self._checkpoints.limits)
+                except CheckpointError as error:
+                    return f"❌ Checkpoint limits are invalid: {error}"
+                return (
+                    "🛟 **Checkpoint Limits**\n"
+                    f"- Files: **{limits.max_files:,}** ({limits.files_source})\n"
+                    f"- Size: **{limits.max_mib:,} MiB** ({limits.mib_source})\n"
+                    "Change: `/checkpoint limits <files> <MiB>`\n"
+                    "Reset: `/checkpoint limits reset`"
+                )
+            if argument.lower() == "limits reset":
+                try:
+                    limits = await asyncio.to_thread(self._checkpoints.reset_limits)
+                except (CheckpointError, OSError) as error:
+                    return f"❌ Could not reset checkpoint limits: {error}"
+                session.active_checkpoint_id = ""
+                await self._save_session(session)
+                return (
+                    "🛟 Checkpoint limits reset: "
+                    f"{limits.max_files:,} files / {limits.max_mib:,} MiB."
+                )
+            if argument.lower().startswith("limits "):
+                values = argument.split()
+                if len(values) != 3:
+                    return "Usage: `/checkpoint limits <files> <MiB>`"
+                try:
+                    limits = await asyncio.to_thread(
+                        self._checkpoints.configure_limits, values[1], values[2]
+                    )
+                except (CheckpointError, OSError) as error:
+                    return f"❌ Could not configure checkpoint limits: {error}"
+                session.active_checkpoint_id = ""
+                await self._save_session(session)
+                return (
+                    "🛟 Checkpoint limits saved: "
+                    f"{limits.max_files:,} files ({limits.files_source}) / "
+                    f"{limits.max_mib:,} MiB ({limits.mib_source})."
                 )
             try:
                 checkpoint = await asyncio.to_thread(

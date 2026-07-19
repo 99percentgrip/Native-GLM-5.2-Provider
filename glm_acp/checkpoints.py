@@ -6,14 +6,20 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .config import config_dir
 
-MAX_CHECKPOINT_FILES = 20_000
-MAX_CHECKPOINT_BYTES = 250 * 1024 * 1024
+DEFAULT_CHECKPOINT_MAX_FILES = 20_000
+DEFAULT_CHECKPOINT_MAX_MIB = 250
+HARD_CHECKPOINT_MAX_FILES = 1_000_000
+HARD_CHECKPOINT_MAX_MIB = 10_240
+CHECKPOINT_MAX_FILES_ENV = "GLM_ACP_CHECKPOINT_MAX_FILES"
+CHECKPOINT_MAX_MIB_ENV = "GLM_ACP_CHECKPOINT_MAX_MIB"
+CHECKPOINT_LIMITS_FILENAME = "checkpoint-limits.json"
 _IGNORED = {".git", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
 _SENSITIVE_NAMES = {".env", "credentials.json", "id_rsa", "id_ed25519"}
 _SENSITIVE_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
@@ -36,11 +42,95 @@ class CheckpointError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class CheckpointLimits:
+    max_files: int
+    max_mib: int
+    files_source: str = "default"
+    mib_source: str = "default"
+
+    @property
+    def max_bytes(self) -> int:
+        return self.max_mib * 1024 * 1024
+
+
+def _limit(value: object, name: str, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise CheckpointError(f"{name} must be a whole number from 1 to {maximum}")
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError) as error:
+        raise CheckpointError(f"{name} must be a whole number from 1 to {maximum}") from error
+    if str(value).strip() != str(parsed) or not 1 <= parsed <= maximum:
+        raise CheckpointError(f"{name} must be a whole number from 1 to {maximum}")
+    return parsed
+
+
 class CheckpointManager:
     """Store baseline bytes and the exact agent-produced hashes needed for safe rollback."""
 
-    def __init__(self, base_dir: Path | None = None) -> None:
+    def __init__(self, base_dir: Path | None = None, limits_path: Path | None = None) -> None:
         self.base_dir = base_dir or config_dir() / "checkpoints"
+        self.limits_path = limits_path or config_dir() / CHECKPOINT_LIMITS_FILENAME
+
+    def limits(self) -> CheckpointLimits:
+        max_files = DEFAULT_CHECKPOINT_MAX_FILES
+        max_mib = DEFAULT_CHECKPOINT_MAX_MIB
+        files_source = "default"
+        mib_source = "default"
+        try:
+            payload = json.loads(self.limits_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            payload = None
+        except (OSError, json.JSONDecodeError) as error:
+            raise CheckpointError(f"Cannot read checkpoint limits: {error}") from error
+        if payload is not None:
+            if not isinstance(payload, dict) or payload.get("schema") != 1:
+                raise CheckpointError("Checkpoint limits file must be a schema-1 JSON object")
+            max_files = _limit(
+                payload.get("max_files"), "Checkpoint max files", HARD_CHECKPOINT_MAX_FILES
+            )
+            max_mib = _limit(payload.get("max_mib"), "Checkpoint max MiB", HARD_CHECKPOINT_MAX_MIB)
+            files_source = mib_source = "profile"
+        if CHECKPOINT_MAX_FILES_ENV in os.environ:
+            max_files = _limit(
+                os.environ[CHECKPOINT_MAX_FILES_ENV],
+                CHECKPOINT_MAX_FILES_ENV,
+                HARD_CHECKPOINT_MAX_FILES,
+            )
+            files_source = "environment"
+        if CHECKPOINT_MAX_MIB_ENV in os.environ:
+            max_mib = _limit(
+                os.environ[CHECKPOINT_MAX_MIB_ENV],
+                CHECKPOINT_MAX_MIB_ENV,
+                HARD_CHECKPOINT_MAX_MIB,
+            )
+            mib_source = "environment"
+        return CheckpointLimits(max_files, max_mib, files_source, mib_source)
+
+    def configure_limits(self, max_files: object, max_mib: object) -> CheckpointLimits:
+        files = _limit(max_files, "Checkpoint max files", HARD_CHECKPOINT_MAX_FILES)
+        mib = _limit(max_mib, "Checkpoint max MiB", HARD_CHECKPOINT_MAX_MIB)
+        parent = self.limits_path.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(parent, 0o700)
+        temporary = parent / f".{self.limits_path.name}.{uuid4().hex}.tmp"
+        try:
+            temporary.write_text(
+                json.dumps({"schema": 1, "max_files": files, "max_mib": mib}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
+            os.replace(temporary, self.limits_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return self.limits()
+
+    def reset_limits(self) -> CheckpointLimits:
+        self.limits_path.unlink(missing_ok=True)
+        return self.limits()
 
     def _workspace_dir(self, root: Path) -> Path:
         identity = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:20]
@@ -63,6 +153,7 @@ class CheckpointManager:
 
     def create(self, cwd: str, label: str = "automatic") -> dict[str, object]:
         root = Path(cwd).resolve()
+        limits = self.limits()
         checkpoint_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
         target = self._workspace_dir(root) / checkpoint_id
         files_dir = target / "files"
@@ -91,10 +182,12 @@ class CheckpointManager:
                 data = path.read_bytes()
                 count += 1
                 total += len(data)
-                if count > MAX_CHECKPOINT_FILES or total > MAX_CHECKPOINT_BYTES:
+                if count > limits.max_files or total > limits.max_bytes:
                     raise CheckpointError(
-                        f"Workspace checkpoint exceeds {MAX_CHECKPOINT_FILES} files or "
-                        f"{MAX_CHECKPOINT_BYTES // (1024 * 1024)} MiB"
+                        f"Workspace checkpoint exceeds {limits.max_files} files or "
+                        f"{limits.max_mib} MiB. Change it with "
+                        f"`/checkpoint limits <files> <MiB>` or the "
+                        f"{CHECKPOINT_MAX_FILES_ENV}/{CHECKPOINT_MAX_MIB_ENV} environment variables"
                     )
                 relative = path.relative_to(root)
                 saved = files_dir / relative
@@ -162,6 +255,7 @@ class CheckpointManager:
 
     def note_workspace_changes(self, cwd: str, checkpoint_id: str) -> list[str]:
         """Record every current path that differs from the checkpoint baseline."""
+        limits = self.limits()
         _, manifest = self._load(cwd, checkpoint_id)
         root = Path(cwd).resolve()
         baseline = manifest.get("files", {})
@@ -176,8 +270,11 @@ class CheckpointManager:
             data = path.read_bytes()
             count += 1
             total += len(data)
-            if count > MAX_CHECKPOINT_FILES or total > MAX_CHECKPOINT_BYTES:
-                raise CheckpointError("Workspace grew beyond checkpoint tracking limits")
+            if count > limits.max_files or total > limits.max_bytes:
+                raise CheckpointError(
+                    "Workspace grew beyond checkpoint tracking limits "
+                    f"({limits.max_files} files/{limits.max_mib} MiB)"
+                )
             current[path.relative_to(root).as_posix()] = _hash(data)
         changed = sorted(
             relative

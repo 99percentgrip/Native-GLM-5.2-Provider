@@ -27,7 +27,7 @@ streaming, 1M context, and auto-continuation for long generations.
 - **Lifecycle extensions**: `hooks.py` — user-owned, hash-pinned, workspace-scoped lifecycle commands
 - **Trajectory evidence**: `telemetry.py` and `observability.py` — bounded metadata-only events plus local aggregate quality, latency, cache, tool, and safety reporting
 - **Failure-driven evaluation**: `failure_corpus.py` — metadata-only drafts and permission-gated runnable project regression cases
-- **Workspace checkpoints**: `checkpoints.py` — bounded secret-excluding baselines, exact agent hashes, and conflict-aware rollback
+- **Workspace checkpoints**: `checkpoints.py` — configurable bounded secret-excluding baselines, exact agent hashes, and conflict-aware rollback
 - **Explicit references**: `references.py` — bounded workspace-contained references with language/task/change-aware ranking
 - **Declarative controls**: `policy.py` and `workflows.py` — ordered allow/ask/deny rules and static dependency graphs
 - **OS command isolation**: `os_sandbox.py` — Linux Bubblewrap, capability-detected macOS Seatbelt, Windows Job Object containment, and required-mode fail closure
@@ -326,11 +326,15 @@ evidence, screenshots, ordinary interaction, waits, and close; arbitrary browser
 JavaScript evaluation is absent and the MCP child receives no inherited credentials.
 
 Automatic workspace checkpoints are created once per mutating user turn before
-the first edit or command. They are bounded to 20,000 files/250 MiB, exclude
-common credential, SSH, private-key, and `.env` paths, and record current hashes
-after each successful mutation. `/rollback` restores only recorded paths whose
-current hash still equals the exact agent-produced hash; any later conflict
-aborts the entire rollback before writes.
+the first edit or command. They default to 20,000 files/250 MiB, exclude common
+credential, SSH, private-key, and `.env` paths, and record current hashes after
+each successful mutation. `/checkpoint limits <files> <MiB>` atomically persists
+profile-isolated limits; `limits` displays their source and `limits reset` restores
+defaults. `GLM_ACP_CHECKPOINT_MAX_FILES` and `GLM_ACP_CHECKPOINT_MAX_MIB` take
+precedence. Values remain hard-bounded to 1,000,000 files/10,240 MiB and invalid
+configuration fails closed. `/rollback` restores only recorded paths whose current
+hash still equals the exact agent-produced hash; any later conflict aborts the
+entire rollback before writes.
 
 Explicit `@file:`, `@folder:`, `@symbol:`, and `@diff` prompt references are
 limited to 12 references and 48,000 aggregate characters. Paths remain inside

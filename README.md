@@ -94,6 +94,7 @@ Type these in the chat input:
 | `/goal [objective\|pause\|resume\|clear]` | Set, inspect, pause, resume, or clear a persistent coding goal |
 | `/subgoal [criterion\|remove N\|clear]` | Manage persistent acceptance criteria for the active goal |
 | `/checkpoint [label\|list]` | Create or list a bounded secret-safe workspace checkpoint |
+| `/checkpoint limits [files MiB\|reset]` | Show, persist, or reset checkpoint size limits |
 | `/rollback [checkpoint-id]` | Restore recorded agent changes unless a later conflicting edit is detected |
 | `/plugins` | List installed declarative plugins and their integrity state |
 | `/awareness` | Show knowledge, uncertainty, stale evidence, capability limits, next evidence, and completion coverage |
@@ -115,6 +116,22 @@ private-key, SSH, and `.env` files are never copied. After each mutation, the
 checkpoint records the exact resulting hashes. `/rollback` restores only those
 paths; if any current hash differs, rollback stops without overwriting the later
 change. Use `/checkpoint list` to inspect recent checkpoints.
+
+The default checkpoint ceiling is 20,000 files or 250 MiB. Large-repository
+users can inspect or change the active profile's persistent limits directly in
+chat; the change takes effect on the next checkpoint:
+
+```text
+/checkpoint limits
+/checkpoint limits 100000 1024
+/checkpoint limits reset
+```
+
+For process-managed installations, `GLM_ACP_CHECKPOINT_MAX_FILES` and
+`GLM_ACP_CHECKPOINT_MAX_MIB` override the saved profile values. Invalid, zero,
+or excessive values fail closed; the supported maximum is 1,000,000 files and
+10,240 MiB. Limit changes never include ignored dependencies, build output, or
+sensitive files in checkpoints.
 
 Prompts may explicitly include `@file:path`, `@folder:path`, `@symbol:name`, or
 `@diff`. Expansion stays inside workspace roots, has file/character limits,
@@ -418,10 +435,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v1.6.0` before running the Unix
-installer, or pass `-Version v1.6.0` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v1.6.1` before running the Unix
+installer, or pass `-Version v1.6.1` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v1.6.0](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.6.0).
+[v1.6.1](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.6.1).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -751,7 +768,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-1.6.0.dist-info  (and editable-install metadata)
+# expect: glm_acp-1.6.1.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
