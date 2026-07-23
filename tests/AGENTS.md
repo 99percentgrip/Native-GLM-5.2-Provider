@@ -10,7 +10,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_cli.py` covers terminal setup and secret-safe status output.
 - `test_config.py` covers models, endpoints, credential precedence, and secure persistence.
 - `test_registry_package.py` covers public Registry identity and release URL invariants.
-- `test_installers.py` covers the user-local command aliases, checksum enforcement, platform mapping, and release publication contract.
+- `test_installers.py` covers the user-local command aliases, checksum enforcement, platform mapping, release publication contract, and post-install TUI discovery guidance.
 - `test_uninstall.py` covers frozen-copy guards, default and installer-selected profile cleanup, command/PATH removal, credential preservation and purge, and surgical Zed JSONC cleanup with backup.
 - Remaining modules cover tools, sessions, streaming, compaction, and GLM HTTP behavior.
 - `test_mcp.py` and `test_memory.py` cover remote MCP, scoped memory, verified skills, telemetry, pinning, curation, and reversible archival.
@@ -27,7 +27,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_deliberation.py` covers evidence-only critic isolation, bounded falsifiable hypotheses, fresh test evidence, stale invalidation, value-of-information ranking, diff redaction, persistence, commands, and metadata-only observability.
 - `test_repository_intelligence.py` covers lazy bounded world slices, imports/tests/instructions/ownership/failure metadata, prediction comparison, high-risk pre-mortems, small-task restraint, causal strategy drafts, explicit promotion, fresh/mutated evaluation gates, CLI surfaces, persistence, and metadata-only observability.
 - `test_terminal_cli.py` covers standalone parser parity, streamed update rendering, reasoning visibility control, fail-closed non-interactive permissions, credential-redacted permission context, and routing every session option through the shared agent methods.
-- `test_tui.py` covers full-screen panel mounting, shared-runtime prompts, every documented function-key action, local slash controls, thinking visibility, credential-redacted modal approvals, and automatic interactive TUI routing.
+- `test_tui.py` covers full-screen panel mounting, shared-runtime prompts, live slash-catalog filtering, keyboard completion/navigation, primary `/plan` and `/thinking` parity across all API plans and model-compatible levels, plan-filtered models, settings filtering, provider-quota startup/manual refresh and sidebar rendering, pointer-actionable footer controls, terminal-safe Ctrl-X quit metadata, non-shadowing Textual lifecycle state, bounded stalled cleanup, inline configuration through shared session APIs, every documented function-key action, local presentation controls, thinking visibility, credential-redacted modal approvals, and automatic interactive TUI routing.
 
 ## Local Contracts
 
@@ -37,6 +37,9 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - Platform-specific tests must skip when their operating-system semantics are unavailable.
 - Streaming tests must cover incomplete HTTP 200 responses, retry boundaries,
   delta coalescing, continuation caps, and exact Deep High/Max request fields.
+- Provider-usage tests must prove official-host-only credential routing, exact
+  5-hour/weekly/MCP normalization, bounded malformed-response handling, and no
+  live account calls.
 - Tool tests must cover output bounds and make command exit status observable.
 - Persistence tests must verify metadata-sidecar listing and deletion behavior.
 - Learning tests must cover verification gating, progressive skill discovery, secret rejection, workspace containment, and deletion limited to agent-owned skills.

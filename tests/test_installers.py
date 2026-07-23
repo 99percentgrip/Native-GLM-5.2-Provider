@@ -65,7 +65,8 @@ def test_unix_installer_verifies_and_installs_both_commands(tmp_path):
     )
     assert "Next: glm-acp --setup" in result.stdout
     assert "full-screen agent: glm-acp chat" in result.stdout
-    assert "press F1 or type /help" in result.stdout
+    assert "type / for the live menu" in result.stdout
+    assert "Ctrl-X to exit" in result.stdout
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix installer integration test")
@@ -132,8 +133,10 @@ def test_installer_release_contract():
     assert "Get-FileHash -Algorithm SHA256" in windows
     assert '"native-glm-acp.exe"' in windows
     assert '"glm-acp.exe"' in windows
-    assert "press F1 or type /help" in unix
-    assert "press F1 or type /help" in windows
+    assert "type / for the live menu" in unix
+    assert "type / for the live menu" in windows
+    assert "Ctrl-X to exit" in unix
+    assert "Ctrl-X to exit" in windows
     assert "scripts/install.sh" in workflow
     assert "scripts/install.ps1" in workflow
     assert 'chat --help | grep -q -- "--plain"' in workflow

@@ -82,6 +82,9 @@ When the user requests a durable behavior change, record it here or in the relev
 - Registry installation uses version-pinned frozen binaries for Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows x86-64.
 - Public GitHub installation provides checksum-verifying, user-local installers that expose both `native-glm-acp` and `glm-acp` without requiring Python, Node.js, or administrator privileges.
 - Public frozen installs provide `glm-acp --uninstall`; credentials are preserved unless the user explicitly adds `--purge`, and source or Registry-managed copies must not self-delete.
+- Standalone terminal interaction is discoverable and editor-parity oriented: typing `/` opens the live agent command catalog with `/plan`, `/thinking`, and `/model` first; `/plan` names Coding Plan, Standard API, and BigModel (CN) directly; `/thinking` controls provider reasoning while F2 and `/reasoning-panel` control only its view; all model, plan, thinking, permission, mode, generation, auxiliary-model, and Mixture-of-Agents changes use the same session APIs as ACP editors.
+- Terminal quit is delivery-safe and bounded: the visible/clickable footer uses Ctrl-X, F10 and `/exit` are equivalents, Ctrl-Q is hidden because POSIX flow control may swallow it, TUI lifecycle state never shadows Textual internals, provider telemetry DNS/HTTP cannot hold the UI event loop open, and shutdown waits at most three seconds for shared-resource cleanup.
+- Provider limits remain authoritative and credential-safe: `/usage` and the TUI sidebar use Z.ai's official monitor endpoint for 5-hour, weekly, and MCP Coding Plan quota windows, make no local quota estimates, and never send credentials to a custom API host.
 - Terminal authentication must never echo or log `ZAI_API_KEY`; environment credentials take precedence over the user-only stored credential file.
 - Agent learning is inspectable, permission-gated, secret-safe, and reversible: facts/skills stay project-local, while explicitly approved user preferences use private cross-project storage.
 - Advanced learning remains evidence-gated: failed traces may produce drafts, but candidates require higher held-out pass rate with no per-case, median-latency, or token-cost regression and explicit promotion; delegation is read-only, depth-one, shared-budgeted, and permission-gated.
@@ -106,11 +109,12 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 
 ## Current Project Status
 
-- Package and ACP implementation version is `1.8.1` from `glm_acp.__version__`.
-- GitHub release `v1.8.1` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `1.8.2` from `glm_acp.__version__`.
+- GitHub release `v1.8.2` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
-- `glm-acp chat` and `native-glm-acp chat` open a cross-platform full-screen Textual interface over the full existing `GlmAcpAgent` runtime without an editor; conversation/reasoning/tool/plan/status panels, credential-redacted modal approvals, direct F1 help, visible F2 state, live F3 session settings, and equivalent `/thinking`, `/settings`, and `/clear-view` controls remain presentation-only while persistence, tools, commands, MCP/browser integration, workers, learning, awareness, repository intelligence, checkpoints, and verification stay shared with ACP clients. `--plain`, `--prompt`, `--stdin`, and `--json` preserve line and automation surfaces.
+- `glm-acp chat` and `native-glm-acp chat` open a cross-platform full-screen Textual interface over the full existing `GlmAcpAgent` runtime without an editor; a live `/` completion menu consumes the same available-command updates as Zed, puts API-plan/thinking/model controls first, and exposes every session setting through the shared APIs. Reasoning starts collapsed; F2 and `/reasoning-panel` toggle only its view, while `/thinking` changes the actual provider level. Compact conversation/activity/plan/status panels, credential-redacted modal approvals, F1 help, F3 settings, `/settings`, and `/clear-view` remain presentation-only while persistence, tools, MCP/browser integration, workers, learning, awareness, repository intelligence, checkpoints, and verification stay shared with ACP clients. `--plain`, `--prompt`, `--stdin`, and `--json` preserve line and automation surfaces.
+- `/usage` works in ACP editors and terminal frontends; the TUI performs one non-blocking startup refresh and shows live provider-reported 5-hour, weekly, and monthly MCP quota percentages in the session sidebar, while an explicit `/usage` refresh displays available used/limit/remaining/reset details.
 - Public frozen binaries support one-command removal of installer-owned commands, PATH markers, and matching custom Zed configuration with an automatic settings backup.
 - ACP initialization advertises Registry-compatible `zai-api-key-setup` Terminal Auth.
 - Terminal setup stores credentials atomically without echoing or logging the key; environment credentials take precedence.
@@ -167,7 +171,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-1.8.1.dist-info
+# expect: editable glm_acp metadata and glm_acp-1.8.2.dist-info
 ```
 
 ## Verification

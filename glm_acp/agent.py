@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -95,7 +96,7 @@ from .deliberation import (
 )
 from .diagnostics import DiagnosticsManager
 from .failure_corpus import FailureCorpus
-from .glm_client import GlmClient
+from .glm_client import GlmClient, PlanQuota, PlanUsage
 from .guardrails import ToolLoopGuard
 from .hooks import LifecycleHooks
 from .mcp import MCP_TOOL_DEFINITIONS, McpError, McpManager
@@ -638,6 +639,53 @@ class GlmAcpAgent(acp.Agent):
             )
             session.aux_client_key = key
         return session.aux_client
+
+    async def query_provider_usage(self, session_id: str) -> PlanUsage:
+        """Return authoritative provider quota windows for a live session."""
+        session = self._sessions[session_id]
+        return await self._client_for_session(session).query_plan_usage()
+
+    def query_provider_usage_sync(self, session_id: str) -> PlanUsage:
+        """Return provider quota windows without borrowing the ACP event loop."""
+        session = self._sessions[session_id]
+        return self._client_for_session(session).query_plan_usage_sync()
+
+    @staticmethod
+    def format_provider_usage(usage: PlanUsage) -> str:
+        """Render normalized provider quota data without exposing credentials."""
+        lines = [f"📊 **{usage.platform} Coding Plan usage**"]
+        for quota in usage.quotas:
+            label = GlmAcpAgent._quota_label(quota)
+            fields: list[str] = []
+            if quota.percentage is not None:
+                fields.append(f"**{quota.percentage:g}% used**")
+            if quota.used is not None and quota.limit is not None:
+                fields.append(f"{quota.used:,} / {quota.limit:,}")
+            elif quota.remaining is not None:
+                fields.append(f"{quota.remaining:,} remaining")
+            if quota.next_reset_ms is not None:
+                try:
+                    reset = datetime.fromtimestamp(quota.next_reset_ms / 1000).astimezone()
+                except (OSError, OverflowError, ValueError):
+                    reset = None
+                if reset is not None:
+                    fields.append(f"resets {reset.strftime('%Y-%m-%d %H:%M %Z')}")
+            lines.append(f"- **{label}:** " + (" · ".join(fields) or "reported by provider"))
+            if quota.usage_details:
+                detail = ", ".join(f"{name}: {value:,}" for name, value in quota.usage_details)
+                lines.append(f"  - {detail}")
+        lines.append("_Live provider telemetry; values are not estimated from local tokens._")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _quota_label(quota: PlanQuota) -> str:
+        if quota.kind == "TOKENS_LIMIT" and quota.unit == 3:
+            return "5-hour model quota"
+        if quota.kind == "TOKENS_LIMIT" and quota.unit == 6:
+            return "Weekly model quota"
+        if quota.kind == "TIME_LIMIT":
+            return "Monthly MCP quota"
+        return "Model quota"
 
     @staticmethod
     def _record_auxiliary_usage(session: Session, usage: dict[str, int] | None) -> None:
@@ -3984,6 +4032,10 @@ class GlmAcpAgent(acp.Agent):
                 ),
             ),
             AvailableCommand(
+                name="usage",
+                description="Refresh Z.ai Coding Plan 5-hour, weekly, and MCP quota limits",
+            ),
+            AvailableCommand(
                 name="awareness",
                 description=(
                     "Show current evidence, uncertainty, contradictions, stale support, "
@@ -4066,6 +4118,7 @@ class GlmAcpAgent(acp.Agent):
             return (
                 "⌨️ **Harness Commands**\n\n"
                 "- `/status` — session, model, permissions, context, and evidence\n"
+                "- `/usage` — live Coding Plan 5-hour, weekly, and MCP quota\n"
                 "- `/compact [focus]` — compact older context\n"
                 "- `/diff` · `/export` · `/clear-plan` · `/clear-history`\n"
                 "- `/checkpoint …` · `/rollback [id]` · `/plugins`\n"
@@ -4074,10 +4127,21 @@ class GlmAcpAgent(acp.Agent):
                 "- `/meta-learning …` · `/observability [json]`\n"
                 "- `/memory` · `/skills` · `/profile` · `/curator`\n"
                 "- `/sessions [query]` · `/lineage`\n\n"
-                "Terminal UI: F1 help · F2 reasoning panel · F3 settings · "
-                "Ctrl-L clear view · Ctrl-C cancel · Ctrl-Q quit. "
-                "You can also use `/thinking`, `/settings`, and `/clear-view`."
+                "Terminal UI: type `/` for the live command menu; `/plan` switches "
+                "Coding Plan, Standard API, or BigModel (CN); `/thinking` changes "
+                "provider reasoning; `/model` switches the plan-compatible model. "
+                "F1 help · F2 reasoning view · F3 settings · Ctrl-L clear view · "
+                "Ctrl-C cancel · Ctrl-X quit (F10 or `/exit` also work). "
+                "`/reasoning-panel`, `/settings`, and "
+                "`/clear-view` provide the equivalent presentation controls."
             )
+
+        if command == "/usage":
+            try:
+                usage = await self.query_provider_usage(session.id)
+            except Exception as error:
+                return f"⚠️ Coding Plan usage is unavailable: {error}"
+            return self.format_provider_usage(usage)
 
         if command == "/compact" or command.startswith("/compact "):
             focus = command.partition(" ")[2].strip()
@@ -4861,7 +4925,7 @@ class GlmAcpAgent(acp.Agent):
         else:
             return (
                 f"Unknown command: {command}\nAvailable commands: /compact, "
-                "/help, /clear-plan, /clear-history, /diff, /export, /status, /memory, "
+                "/help, /clear-plan, /clear-history, /diff, /export, /status, /usage, /memory, "
                 "/awareness, /metacognition, /deliberation, /repository, /meta-learning, "
                 "/skills, /profile, /curator, /sessions"
                 ", /lineage, /goal, /subgoal"

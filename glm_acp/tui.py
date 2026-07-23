@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import threading
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
 from acp.schema import AllowedOutcome, DeniedOutcome, RequestPermissionResponse
+from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -21,11 +24,12 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    Markdown,
+    OptionList,
     RichLog,
     Select,
     Static,
 )
+from textual.widgets.option_list import Option
 from textual.worker import Worker
 
 from .agent import GlmAcpAgent
@@ -39,6 +43,73 @@ from .config import (
     VISION_MODELS,
     thought_levels_for_model,
 )
+from .glm_client import PlanUsage
+
+LOCAL_COMMANDS = {
+    "/plan": "Switch between Coding Plan, Standard API, and BigModel (CN)",
+    "/thinking": "Change provider thinking: Off, Standard, Deep High, or Deep Max",
+    "/model": "Change the active GLM model",
+    "/usage": "Refresh live 5-hour, weekly, and MCP Coding Plan quota",
+    "/permission": "Change Ask, Read Only, or Bypass permissions",
+    "/mode": "Change Ask or Code session mode",
+    "/generation": "Change the generation style",
+    "/auxiliary": "Change the auxiliary model",
+    "/mixture": "Enable or disable Mixture of Agents",
+    "/settings": "Open all live session settings",
+    "/reasoning": "Alias for /thinking",
+    "/api-plan": "Alias for /plan",
+    "/endpoint": "Alias for /plan",
+    "/reasoning-panel": "Show or hide the live reasoning panel",
+    "/toggle-thinking": "Alias for /reasoning-panel",
+    "/clear-view": "Clear only the visible transcript",
+    "/image": "Queue an image for the next prompt",
+    "/exit": "Close the terminal agent",
+}
+
+CONFIG_COMMANDS = {
+    "/plan": ("api_endpoint", "API plan"),
+    "/thinking": ("thought_level", "Thinking"),
+    "/model": ("model", "Model"),
+    "/permission": ("permission_mode", "Permissions"),
+    "/generation": ("generation_profile", "Generation style"),
+    "/auxiliary": ("auxiliary_model", "Auxiliary model"),
+    "/mixture": ("mixture_mode", "Mixture of Agents"),
+    "/mode": ("session_mode", "Session mode"),
+    "/reasoning": ("thought_level", "Thinking"),
+    "/api-plan": ("api_endpoint", "API plan"),
+    "/endpoint": ("api_endpoint", "API plan"),
+}
+
+
+class CommandInput(Input):
+    """Composer input with command-menu navigation while focus stays in place."""
+
+    BINDINGS = [
+        Binding("tab", "command_complete", show=False, priority=True),
+        Binding("up", "command_up", show=False, priority=True),
+        Binding("down", "command_down", show=False, priority=True),
+        Binding("escape", "command_escape", show=False, priority=True),
+    ]
+
+    def action_command_complete(self) -> None:
+        app = self.app
+        if isinstance(app, NativeGlmTui):
+            app.accept_command_completion(submit=False)
+
+    def action_command_up(self) -> None:
+        app = self.app
+        if isinstance(app, NativeGlmTui):
+            app.move_command_highlight(-1)
+
+    def action_command_down(self) -> None:
+        app = self.app
+        if isinstance(app, NativeGlmTui):
+            app.move_command_highlight(1)
+
+    def action_command_escape(self) -> None:
+        app = self.app
+        if isinstance(app, NativeGlmTui):
+            app.hide_command_menu()
 
 
 class PermissionScreen(ModalScreen[bool]):
@@ -128,8 +199,11 @@ class SettingsScreen(ModalScreen[dict[str, str] | None]):
         return [(str(info.get("name", key)), key) for key, info in mapping.items()]
 
     def compose(self) -> ComposeResult:
-        auxiliary = [("Main model", DEFAULT_AUXILIARY_MODEL)] + [
-            (str(MODELS[key]["name"]), key) for key in MODELS if key not in VISION_MODELS
+        endpoint = self.values["api_endpoint"]
+        model_keys = [key for key, info in MODELS.items() if endpoint in info.get("plans", [])]
+        thought_levels = thought_levels_for_model(self.values["model"])
+        auxiliary = [("Use main model", DEFAULT_AUXILIARY_MODEL)] + [
+            (str(MODELS[key]["name"]), key) for key in model_keys if key not in VISION_MODELS
         ]
         with Vertical(id="settings-dialog"):
             yield Label("Session settings", id="settings-title")
@@ -144,7 +218,7 @@ class SettingsScreen(ModalScreen[dict[str, str] | None]):
                 )
                 yield Label("Model", classes="settings-label")
                 yield Select(
-                    self._options(MODELS),
+                    [(str(MODELS[key]["name"]), key) for key in model_keys],
                     value=self.values["model"],
                     allow_blank=False,
                     id="model",
@@ -152,7 +226,7 @@ class SettingsScreen(ModalScreen[dict[str, str] | None]):
                 )
                 yield Label("Reasoning", classes="settings-label")
                 yield Select(
-                    self._options(THOUGHT_LEVELS),
+                    self._options(thought_levels),
                     value=self.values["thought_level"],
                     allow_blank=False,
                     id="thought_level",
@@ -290,29 +364,65 @@ class NativeGlmTui(App[int]):
     TITLE = "Native GLM ACP"
     SUB_TITLE = "Full harness terminal"
     ENABLE_COMMAND_PALETTE = False
+    SHUTDOWN_TIMEOUT_SECONDS = 3.0
     BINDINGS = [
-        Binding("ctrl+q", "quit_agent", "Quit", priority=True),
+        Binding("ctrl+x", "quit_agent", "Quit", priority=True),
+        Binding("f10", "quit_agent", "Quit", show=False, priority=True),
+        # Ctrl-Q is swallowed by XON/XOFF flow control in many POSIX terminals.
+        # Keep it as a hidden compatibility alias for terminals that deliver it.
+        Binding("ctrl+q", "quit_agent", "Quit", show=False, priority=True),
         Binding("ctrl+c", "cancel_turn", "Cancel turn", priority=True),
         Binding("ctrl+l", "clear_transcript", "Clear view", priority=True),
         Binding("f1", "show_help", "Help", priority=True),
-        Binding("f2", "toggle_thinking", "Thinking", priority=True),
+        Binding("f2", "toggle_thinking", "Reasoning view", priority=True),
         Binding("f3", "settings", "Settings", priority=True),
     ]
 
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: #0b1017; }
+    Header { background: #111a24; color: #d7e3f4; }
     #workspace { height: 1fr; }
     #conversation { width: 1fr; }
-    #transcript { height: 3fr; border: round $primary; padding: 0 1; }
-    #thinking { height: 1fr; min-height: 5; border: round $secondary; padding: 0 1; }
+    #transcript {
+        height: 1fr; border: round #2589d8; padding: 0 1;
+        background: #0d131b;
+    }
+    #thinking {
+        height: 12; min-height: 6; border: round #8a5fd3; padding: 0 1;
+        background: #10131c;
+    }
     #thinking.hidden { display: none; }
-    #sidebar { width: 38; min-width: 28; border: round $accent; padding: 0 1; }
-    #session { height: auto; padding-bottom: 1; }
-    #tools { height: 1fr; min-height: 8; border-top: solid $accent; border-bottom: solid $accent; }
-    #plan { height: auto; max-height: 12; overflow-y: auto; padding-top: 1; }
-    #composer { dock: bottom; height: 3; border: tall $primary; }
-    .user-message { margin: 1 1 0 8; padding: 1; background: $primary 18%; }
-    .agent-message { margin: 1 8 0 1; padding: 1; background: $surface-lighten-1; }
+    #sidebar {
+        width: 32; min-width: 26; border: round #d29a32; padding: 0 1;
+        background: #0c1118;
+    }
+    #session { height: auto; padding: 0 0 1 0; color: #c8d6e5; }
+    #tools {
+        height: 1fr; min-height: 7; border-top: solid #66502a;
+        border-bottom: solid #66502a; color: #aebdca;
+    }
+    #plan { height: auto; max-height: 10; overflow-y: auto; padding-top: 1; }
+    #command-menu {
+        display: none; height: auto; max-height: 14; margin: 0 1;
+        border: round #36a3f7; background: #111a24; color: #d9e7f5;
+    }
+    #command-menu.visible { display: block; }
+    #command-hint {
+        display: none; height: 1; margin: 0 2; color: #7f96ab;
+        background: #0b1017;
+    }
+    #command-hint.visible { display: block; }
+    #composer {
+        dock: bottom; height: 3; margin: 0 1; border: tall #2589d8;
+        background: #111a24;
+    }
+    Footer { background: #111a24; }
+    .welcome {
+        margin: 1 3; padding: 1 2; border-left: thick #36a3f7;
+        background: #111a24;
+    }
+    .user-message { margin: 1 1 0 8; padding: 1; background: #12314b; }
+    .agent-message { margin: 1 8 0 1; padding: 1; background: #171d26; }
     .system-message { margin: 1 4; color: $text-muted; }
     """
 
@@ -328,25 +438,44 @@ class NativeGlmTui(App[int]):
         self.client = TuiClient(self)
         self.session_id = ""
         self._agent_ready = False
-        self._closing = False
+        # Do not use MessagePump._closing: Textual owns it and setting it before
+        # App.exit() prevents the queued ExitApp message from being processed.
+        self._shutdown_requested = False
+        self._agent_closed = False
         self._prompt_worker: Worker[None] | None = None
         self._replaying = False
-        self._current_agent: Markdown | None = None
+        self._current_agent: Static | None = None
         self._current_agent_text = ""
         self._thinking_text = ""
         self._pending_images = list(args.image)
+        self._slash_commands = dict(LOCAL_COMMANDS)
+        self._command_values: list[str] = []
+        self._provider_usage: PlanUsage | None = None
+        self._provider_usage_error = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="workspace"):
             with Vertical(id="conversation"):
                 yield VerticalScroll(id="transcript")
-                yield RichLog(id="thinking", wrap=True, markup=False, auto_scroll=True)
+                yield RichLog(
+                    id="thinking",
+                    classes="hidden",
+                    wrap=True,
+                    markup=False,
+                    auto_scroll=True,
+                )
             with Vertical(id="sidebar"):
                 yield Static("Starting…", id="session", markup=False)
                 yield RichLog(id="tools", wrap=True, markup=True, auto_scroll=True)
-                yield Static("Plan: none", id="plan", markup=False)
-        yield Input(
+                yield Static("No active plan", id="plan", markup=False)
+        yield OptionList(id="command-menu", compact=True)
+        yield Static(
+            "↑↓ navigate  ·  Enter run/select  ·  Tab complete  ·  Esc close",
+            id="command-hint",
+            markup=False,
+        )
+        yield CommandInput(
             placeholder="Ask Native GLM ACP… (/help for commands)",
             id="composer",
             disabled=True,
@@ -354,6 +483,12 @@ class NativeGlmTui(App[int]):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#transcript").border_title = "Conversation"
+        self.query_one("#thinking").border_title = "Reasoning"
+        self.query_one("#sidebar").border_title = "Session"
+        self.query_one("#tools").border_title = "Activity"
+        self.query_one("#command-menu").border_title = "Commands"
+        self.query_one("#tools", RichLog).write("[dim]Waiting for tool activity…[/dim]")
         self.agent.on_connect(self.client)
         self.initialize_agent()
 
@@ -383,10 +518,8 @@ class NativeGlmTui(App[int]):
             self.query_one("#composer", Input).disabled = False
             self.query_one("#composer", Input).focus()
             self._refresh_session_panel("Ready")
-            await self._append_system(
-                "Full harness ready. F1 help · F2 thinking · F3 settings · "
-                "Ctrl-C cancel · Ctrl-Q quit"
-            )
+            await self._append_welcome()
+            self.refresh_provider_usage(silent=True)
         except Exception as error:
             await self._append_system(f"Startup failed: {error}")
             self._refresh_session_panel("Startup failed")
@@ -394,6 +527,11 @@ class NativeGlmTui(App[int]):
     @on(Input.Submitted, "#composer")
     async def submit_input(self, event: Input.Submitted) -> None:
         text = event.value.strip()
+        completion = self.accept_command_completion()
+        if completion == "expanded":
+            return
+        if completion == "selected":
+            text = event.input.value.strip()
         if not text or not self._agent_ready or self._prompt_worker is not None:
             return
         event.input.clear()
@@ -418,10 +556,24 @@ class NativeGlmTui(App[int]):
         self._prompt_worker = self.run_prompt(text, list(self._pending_images))
         self._pending_images.clear()
 
+    @on(Input.Changed, "#composer")
+    def composer_changed(self, event: Input.Changed) -> None:
+        if event.value == event.input.value:
+            self.refresh_command_menu(event.value)
+
+    @on(OptionList.OptionSelected, "#command-menu")
+    async def command_selected(self, event: OptionList.OptionSelected) -> None:
+        result = self.accept_command_completion(index=event.option_index)
+        if result == "selected":
+            await self.query_one("#composer", CommandInput).action_submit()
+
     async def _handle_local_command(self, text: str) -> bool:
         """Handle presentation-only commands without entering the model loop."""
-        if text == "/thinking":
+        if text in {"/reasoning-panel", "/toggle-thinking"}:
             self.action_toggle_thinking()
+            return True
+        if text == "/usage":
+            self.refresh_provider_usage(silent=False)
             return True
         if text == "/settings":
             self.action_settings()
@@ -430,7 +582,235 @@ class NativeGlmTui(App[int]):
             await self.action_clear_transcript()
             self.notify("Transcript view cleared", severity="information")
             return True
+        command, separator, argument = text.partition(" ")
+        if command in CONFIG_COMMANDS:
+            if not separator or not argument.strip():
+                composer = self.query_one("#composer", CommandInput)
+                composer.value = f"{command} "
+                composer.cursor_position = len(composer.value)
+                self.refresh_command_menu(composer.value)
+                return True
+            await self._apply_inline_config(command, argument.strip())
+            return True
         return False
+
+    async def _apply_inline_config(self, command: str, value: str) -> None:
+        choices = {item for item, _description in self._configuration_values(command)}
+        _config_id, label = CONFIG_COMMANDS[command]
+        if value not in choices:
+            await self._append_system(
+                f"Unknown {label.lower()} value: {value}. Available: {', '.join(sorted(choices))}"
+            )
+            return
+        if command == "/mode":
+            await self.agent.set_session_mode(mode_id=value, session_id=self.session_id)
+        else:
+            config_id = CONFIG_COMMANDS[command][0]
+            await self.agent.set_config_option(
+                config_id=config_id,
+                session_id=self.session_id,
+                value=value,
+            )
+        session = self.agent._sessions[self.session_id]
+        actual = value if command == "/mode" else str(getattr(session, CONFIG_COMMANDS[command][0]))
+        self._refresh_session_panel("Ready")
+        await self._append_system(f"✓ {label}: {self._display_config_value(command, actual)}")
+        if CONFIG_COMMANDS[command][0] == "api_endpoint":
+            self.refresh_provider_usage(silent=True)
+
+    def _configuration_values(self, command: str) -> list[tuple[str, str]]:
+        session = self.agent._sessions.get(self.session_id)
+        if session is None:
+            return []
+        config_id = CONFIG_COMMANDS.get(command, ("", ""))[0]
+        values: list[tuple[str, str]]
+        if config_id == "model":
+            values = [
+                (
+                    key,
+                    f"{info['name']} — {info['description']} ({info['context_window']} context)",
+                )
+                for key, info in MODELS.items()
+                if session.api_endpoint in info.get("plans", [])
+            ]
+        elif config_id == "thought_level":
+            values = [
+                (
+                    key,
+                    f"{THOUGHT_LEVELS[key]['name']} — {THOUGHT_LEVELS[key]['description']}",
+                )
+                for key in thought_levels_for_model(session.model)
+            ]
+        elif config_id == "permission_mode":
+            values = [
+                ("ask", "Ask before changes"),
+                ("read", "Read Only"),
+                ("bypass", "Bypass"),
+            ]
+        elif config_id == "session_mode":
+            values = [("ask", "Ask / explain"), ("code", "Code / act")]
+        elif config_id == "api_endpoint":
+            values = [
+                (key, f"{info['name']} — {info['description']}")
+                for key, info in API_ENDPOINTS.items()
+            ]
+        elif config_id == "generation_profile":
+            values = [
+                (key, f"{info['name']} — {info['description']}")
+                for key, info in GENERATION_PROFILES.items()
+            ]
+        elif config_id == "auxiliary_model":
+            values = [(DEFAULT_AUXILIARY_MODEL, "Use main model")]
+            values.extend(
+                (key, str(MODELS[key]["name"]))
+                for key, info in MODELS.items()
+                if session.api_endpoint in info.get("plans", []) and key not in VISION_MODELS
+            )
+        elif config_id == "mixture_mode":
+            values = [("off", "Off"), ("enabled", "Reference review")]
+        else:
+            return []
+        current = self._current_config_value(command)
+        return [
+            (item, f"{description} · current" if item == current else description)
+            for item, description in values
+        ]
+
+    def _current_config_value(self, command: str) -> str:
+        session = self.agent._sessions.get(self.session_id)
+        if session is None:
+            return ""
+        if command == "/mode":
+            return str(session.mode)
+        config_id = CONFIG_COMMANDS.get(command, ("", ""))[0]
+        return str(getattr(session, config_id, ""))
+
+    @staticmethod
+    def _display_config_value(command: str, value: str) -> str:
+        config_id = CONFIG_COMMANDS.get(command, ("", ""))[0]
+        if config_id == "api_endpoint":
+            return str(API_ENDPOINTS.get(value, {}).get("name", value))
+        if config_id == "model":
+            return str(MODELS.get(value, {}).get("name", value))
+        if config_id == "thought_level":
+            return str(THOUGHT_LEVELS.get(value, {}).get("name", value))
+        if config_id == "generation_profile":
+            return str(GENERATION_PROFILES.get(value, {}).get("name", value))
+        if config_id == "auxiliary_model" and value == DEFAULT_AUXILIARY_MODEL:
+            return "Use main model"
+        return value
+
+    def refresh_command_menu(self, value: str) -> None:
+        menu = self.query_one("#command-menu", OptionList)
+        if not value.startswith("/") or self._prompt_worker is not None:
+            self.hide_command_menu()
+            return
+        command, separator, argument = value.partition(" ")
+        choices: list[tuple[str, str]]
+        if command in CONFIG_COMMANDS and separator:
+            query = argument.strip().lower()
+            available = [
+                (f"{command} {item}", description)
+                for item, description in self._configuration_values(command)
+            ]
+            prefix_matches = [
+                item for item in available if item[0].partition(" ")[2].lower().startswith(query)
+            ]
+            choices = (
+                available
+                if not query
+                else prefix_matches or [item for item in available if query in item[1].lower()]
+            )
+        elif separator:
+            self.hide_command_menu()
+            return
+        else:
+            query = value.lower()
+            available = [
+                (
+                    name,
+                    (
+                        f"{description} · current "
+                        f"{self._display_config_value(name, self._current_config_value(name))}"
+                        if name in CONFIG_COMMANDS
+                        else description
+                    ),
+                )
+                for name, description in self._slash_commands.items()
+            ]
+            exact_matches = [item for item in available if item[0] == query]
+            prefix_matches = [item for item in available if item[0].startswith(query)]
+            choices = (
+                available
+                if query == "/"
+                else exact_matches
+                or prefix_matches
+                or [item for item in available if query[1:] in item[1].lower()]
+            )
+        choices = choices[:50]
+        if not choices:
+            self.hide_command_menu()
+            return
+        self._command_values = [choice for choice, _description in choices]
+        menu.set_options(
+            [
+                Option(
+                    Text.assemble(
+                        (choice, "bold #62b5f5"),
+                        "  ",
+                        (
+                            description
+                            if len(description) <= 88
+                            else description[:87].rstrip() + "…",
+                            "dim",
+                        ),
+                    ),
+                    id=f"choice-{index}",
+                )
+                for index, (choice, description) in enumerate(choices)
+            ]
+        )
+        menu.highlighted = 0
+        menu.add_class("visible")
+        self.query_one("#command-hint").add_class("visible")
+
+    def hide_command_menu(self) -> None:
+        self.query_one("#command-menu").remove_class("visible")
+        self.query_one("#command-hint").remove_class("visible")
+        self._command_values = []
+
+    def move_command_highlight(self, direction: int) -> None:
+        menu = self.query_one("#command-menu", OptionList)
+        if not menu.has_class("visible"):
+            return
+        if direction < 0:
+            menu.action_cursor_up()
+        else:
+            menu.action_cursor_down()
+
+    def accept_command_completion(
+        self, *, index: int | None = None, submit: bool = True
+    ) -> str | None:
+        menu = self.query_one("#command-menu", OptionList)
+        if not menu.has_class("visible") or not self._command_values:
+            return None
+        selected_index = menu.highlighted if index is None else index
+        if selected_index is None or not 0 <= selected_index < len(self._command_values):
+            return None
+        value = self._command_values[selected_index]
+        composer = self.query_one("#composer", CommandInput)
+        if value in CONFIG_COMMANDS:
+            composer.value = f"{value} "
+            composer.cursor_position = len(composer.value)
+            self.refresh_command_menu(composer.value)
+            return "expanded"
+        composer.value = value
+        composer.cursor_position = len(value)
+        if not submit:
+            self.refresh_command_menu(value)
+            return "expanded"
+        self.hide_command_menu()
+        return "selected"
 
     @work(exclusive=True, group="agent-prompt", exit_on_error=False)
     async def run_prompt(self, text: str, images: list[str]) -> None:
@@ -449,15 +829,81 @@ class NativeGlmTui(App[int]):
             await self._append_system(f"Turn failed: {error}")
         finally:
             self._prompt_worker = None
-            if not self._closing:
+            if not self._shutdown_requested:
                 composer = self.query_one("#composer", Input)
                 composer.disabled = False
                 composer.focus()
                 self._refresh_session_panel("Ready")
 
+    @work(exclusive=True, group="provider-usage", exit_on_error=False)
+    async def refresh_provider_usage(self, *, silent: bool) -> None:
+        """Refresh provider-reported quota data without blocking the composer."""
+        try:
+            usage = await self._query_provider_usage()
+        except Exception as error:
+            self._provider_usage = None
+            self._provider_usage_error = str(error)[:300]
+            self._refresh_session_panel("Running" if self._prompt_worker is not None else "Ready")
+            if not silent:
+                await self._append_system(
+                    f"Coding Plan usage is unavailable: {self._provider_usage_error}"
+                )
+            return
+        self._provider_usage = usage
+        self._provider_usage_error = ""
+        self._refresh_session_panel("Running" if self._prompt_worker is not None else "Ready")
+        if not silent:
+            rendered = self.agent.format_provider_usage(usage).replace("**", "").replace("_", "")
+            await self._append_system(rendered)
+
+    async def _query_provider_usage(self) -> PlanUsage:
+        """Run synchronous DNS/HTTP away from the UI loop in a daemon thread."""
+        sync_query = getattr(self.agent, "query_provider_usage_sync", None)
+        if not callable(sync_query):
+            return await self.agent.query_provider_usage(self.session_id)
+
+        loop = asyncio.get_running_loop()
+        result: asyncio.Future[PlanUsage] = loop.create_future()
+
+        def resolve() -> None:
+            try:
+                usage = sync_query(self.session_id)
+            except Exception as error:
+                outcome: tuple[PlanUsage | None, Exception | None] = (None, error)
+            else:
+                outcome = (usage, None)
+
+            def deliver() -> None:
+                if result.done():
+                    return
+                usage_value, error_value = outcome
+                if error_value is not None:
+                    result.set_exception(error_value)
+                else:
+                    assert usage_value is not None
+                    result.set_result(usage_value)
+
+            try:
+                loop.call_soon_threadsafe(deliver)
+            except RuntimeError:
+                pass
+
+        threading.Thread(
+            target=resolve,
+            name="glm-acp-provider-usage",
+            daemon=True,
+        ).start()
+        return await result
+
     async def handle_session_update(self, update: Any) -> None:
         kind = str(getattr(update, "session_update", ""))
-        if kind == "agent_message_chunk":
+        if kind == "available_commands_update":
+            for command in getattr(update, "available_commands", []):
+                name = "/" + str(getattr(command, "name", "")).lstrip("/")
+                description = str(getattr(command, "description", "") or "Harness command")
+                if name != "/":
+                    self._slash_commands[name] = description
+        elif kind == "agent_message_chunk":
             await self._append_agent(self._content_text(update))
         elif kind == "user_message_chunk" and self._replaying:
             await self._append_user(self._content_text(update), history=True)
@@ -508,10 +954,10 @@ class NativeGlmTui(App[int]):
         transcript = self.query_one("#transcript", VerticalScroll)
         if self._current_agent is None:
             self._current_agent_text = ""
-            self._current_agent = Markdown("", classes="agent-message")
+            self._current_agent = Static("", classes="agent-message", markup=False)
             await transcript.mount(self._current_agent)
         self._current_agent_text += text
-        await self._current_agent.update(self._current_agent_text)
+        self._current_agent.update(RichMarkdown(self._current_agent_text))
         transcript.scroll_end(animate=False)
 
     async def _append_system(self, text: str) -> None:
@@ -519,16 +965,57 @@ class NativeGlmTui(App[int]):
         await transcript.mount(Static(text, classes="system-message", markup=False))
         transcript.scroll_end(animate=False)
 
+    async def _append_welcome(self) -> None:
+        transcript = self.query_one("#transcript", VerticalScroll)
+        await transcript.mount(
+            Static(
+                RichMarkdown(
+                    "### Native GLM ACP\n"
+                    "Full coding-agent runtime is ready. Type **`/`** for commands, "
+                    "**`/plan`** to switch APIs, **`/thinking`** for reasoning depth, "
+                    "or **F3** for all settings."
+                ),
+                classes="welcome",
+                markup=False,
+            )
+        )
+        transcript.scroll_end(animate=False)
+
     def _refresh_session_panel(self, state: str, *, used: int = 0, size: int = 0) -> None:
         session = getattr(self.agent, "_sessions", {}).get(self.session_id)
         model = getattr(session, "model", self.args.model or "default")
+        reasoning = getattr(session, "thought_level", "default")
+        endpoint = getattr(session, "api_endpoint", "default")
         permission = getattr(session, "permission_mode", self.args.permission or "ask")
         mode = getattr(session, "mode", self.args.mode or "code")
         context = f"{used:,}/{size:,}" if size else "waiting"
+        reasoning_name = str(THOUGHT_LEVELS.get(reasoning, {}).get("name", reasoning))
+        endpoint_name = str(API_ENDPOINTS.get(endpoint, {}).get("name", endpoint))
+        quota = self._quota_summary()
         self.query_one("#session", Static).update(
-            f"{state}\nSession: {self.session_id or 'starting'}\n"
-            f"Model: {model}\nMode: {mode}\nPermissions: {permission}\nContext: {context}"
+            f"● {state}\n"
+            f"{(self.session_id[:8] + '…') if self.session_id else 'starting'}\n\n"
+            f"{model} · {reasoning_name}\n"
+            f"{endpoint_name}\n"
+            f"{mode} · {permission}\n"
+            f"context {context}\n"
+            f"{quota}"
         )
+
+    def _quota_summary(self) -> str:
+        if self._provider_usage is None:
+            return "quota unavailable · /usage" if self._provider_usage_error else "quota loading…"
+        windows: list[str] = []
+        for quota in self._provider_usage.quotas:
+            if quota.percentage is None:
+                continue
+            if quota.kind == "TOKENS_LIMIT" and quota.unit == 3:
+                windows.append(f"5h {quota.percentage:g}%")
+            elif quota.kind == "TOKENS_LIMIT" and quota.unit == 6:
+                windows.append(f"week {quota.percentage:g}%")
+            elif quota.kind == "TIME_LIMIT":
+                windows.append(f"MCP {quota.percentage:g}%")
+        return "quota " + (" · ".join(windows) if windows else "reported · /usage")
 
     async def action_cancel_turn(self) -> None:
         if self._prompt_worker is None:
@@ -538,12 +1025,25 @@ class NativeGlmTui(App[int]):
         self._prompt_worker.cancel()
 
     async def action_quit_agent(self) -> None:
-        self._closing = True
-        if self._prompt_worker is not None:
-            await self.agent.cancel(session_id=self.session_id)
-            self._prompt_worker.cancel()
-        await self.agent.aclose()
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
         self.exit(0)
+
+    async def _close_agent_resources(self) -> None:
+        if self._agent_closed:
+            return
+        self._agent_closed = True
+        try:
+            if self._prompt_worker is not None and self.session_id:
+                await self.agent.cancel(session_id=self.session_id)
+                self._prompt_worker.cancel()
+            await asyncio.wait_for(
+                self.agent.aclose(),
+                timeout=self.SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
     async def action_clear_transcript(self) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -609,12 +1109,8 @@ class NativeGlmTui(App[int]):
         await self._append_system("Session settings updated.")
 
     async def on_unmount(self) -> None:
-        if not self._closing:
-            self._closing = True
-            if self._prompt_worker is not None:
-                await self.agent.cancel(session_id=self.session_id)
-                self._prompt_worker.cancel()
-            await self.agent.aclose()
+        self._shutdown_requested = True
+        await self._close_agent_resources()
 
 
 def run_tui_command(args: argparse.Namespace) -> int:

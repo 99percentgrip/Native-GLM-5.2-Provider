@@ -14,6 +14,7 @@ from glm_acp.agent import GlmAcpAgent, Session, build_system_prompt
 from glm_acp.config import (
     CONTEXT_WINDOW_TOKENS,
 )
+from glm_acp.glm_client import PlanQuota, PlanUsage
 from glm_acp.tools import Sandbox
 
 
@@ -601,7 +602,12 @@ class TestSlashCommands:
         assert "Harness Commands" in result
         assert "/status" in result
         assert "/checkpoint" in result
-        assert "F2 reasoning panel" in result
+        assert "/plan" in result
+        assert "BigModel (CN)" in result
+        assert "/thinking" in result
+        assert "F2 reasoning view" in result
+        assert "Ctrl-X quit" in result
+        assert "/reasoning-panel" in result
         assert "/settings" in result
 
     @pytest.mark.asyncio
@@ -613,6 +619,43 @@ class TestSlashCommands:
         assert "Learned skills" in result
         assert "Auxiliary model" in result
         assert "Context pressure tier" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_reports_authoritative_provider_windows(self, agent, session):
+        usage = PlanUsage(
+            platform="Z.ai",
+            quotas=(
+                PlanQuota(
+                    kind="TOKENS_LIMIT",
+                    unit=3,
+                    number=5,
+                    limit=1000,
+                    used=250,
+                    remaining=750,
+                    percentage=25,
+                    next_reset_ms=None,
+                ),
+                PlanQuota(
+                    kind="TOKENS_LIMIT",
+                    unit=6,
+                    number=7,
+                    limit=None,
+                    used=None,
+                    remaining=None,
+                    percentage=10,
+                    next_reset_ms=None,
+                ),
+            ),
+        )
+        agent.query_provider_usage = AsyncMock(return_value=usage)
+
+        result = await agent._handle_command(session, "/usage")
+
+        assert "Z.ai Coding Plan usage" in result
+        assert "5-hour model quota" in result
+        assert "25% used" in result
+        assert "Weekly model quota" in result
+        assert "not estimated" in result
 
     @pytest.mark.asyncio
     async def test_memory_and_skills_commands(self, agent, session, tmp_path):
@@ -1061,7 +1104,7 @@ class TestInitialize:
         resp = await agent.initialize(1)
         assert resp.agent_info.name == "glm-acp"
         assert resp.agent_info.title == "Native Z.ai GLM"
-        assert resp.agent_info.version == "1.8.1"
+        assert resp.agent_info.version == "1.8.2"
 
     @pytest.mark.asyncio
     async def test_registry_terminal_auth_method(self, agent):

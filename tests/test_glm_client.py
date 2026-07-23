@@ -7,7 +7,14 @@ import pytest
 os.environ.setdefault("ZAI_API_KEY", "test-key")
 
 from glm_acp.config import MAX_RETRIES
-from glm_acp.glm_client import GlmApiError, GlmClient, StreamResult, ToolCallAccumulator
+from glm_acp.glm_client import (
+    GlmApiError,
+    GlmClient,
+    PlanQuota,
+    PlanUsage,
+    StreamResult,
+    ToolCallAccumulator,
+)
 
 
 class TestGlmApiError:
@@ -121,6 +128,151 @@ class TestGlmClientInit:
 
         src = inspect.getsource(GlmClient._execute_stream)
         assert "self._cancelled" in src
+
+
+class TestPlanUsage:
+    def test_sync_quota_query_uses_the_same_credential_safe_parser(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        client = GlmClient(
+            model="glm-5.2",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "data": {
+                "limits": [
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 3,
+                        "percentage": 12,
+                    }
+                ]
+            }
+        }
+        request = MagicMock(return_value=response)
+        monkeypatch.setattr("glm_acp.glm_client.httpx.get", request)
+
+        usage = client.query_plan_usage_sync()
+
+        assert usage.quotas[0].percentage == 12
+        assert request.call_args.kwargs["headers"]["Authorization"] == "test-key"
+        assert "Bearer" not in request.call_args.kwargs["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_official_quota_response_is_normalized_without_bearer_prefix(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = GlmClient(
+            model="glm-5.2",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "data": {
+                "limits": [
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 3,
+                        "number": 5,
+                        "usage": 800_000_000,
+                        "currentValue": 120_000_000,
+                        "remaining": 680_000_000,
+                        "percentage": 15,
+                        "nextResetTime": 1_770_648_402_389,
+                    },
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 6,
+                        "percentage": 9,
+                    },
+                    {
+                        "type": "TIME_LIMIT",
+                        "usage": 1000,
+                        "currentValue": 25,
+                        "remaining": 975,
+                        "percentage": 2.5,
+                        "usageDetails": [
+                            {"modelCode": "search-prime", "usage": 20},
+                            {"modelCode": "web-reader", "usage": 5},
+                        ],
+                    },
+                ]
+            }
+        }
+        client._client.get = AsyncMock(return_value=response)
+
+        usage = await client.query_plan_usage()
+
+        assert usage == PlanUsage(
+            platform="Z.ai",
+            quotas=(
+                PlanQuota(
+                    kind="TOKENS_LIMIT",
+                    unit=3,
+                    number=5,
+                    limit=800_000_000,
+                    used=120_000_000,
+                    remaining=680_000_000,
+                    percentage=15.0,
+                    next_reset_ms=1_770_648_402_389,
+                ),
+                PlanQuota(
+                    kind="TOKENS_LIMIT",
+                    unit=6,
+                    number=None,
+                    limit=None,
+                    used=None,
+                    remaining=None,
+                    percentage=9.0,
+                    next_reset_ms=None,
+                ),
+                PlanQuota(
+                    kind="TIME_LIMIT",
+                    unit=None,
+                    number=None,
+                    limit=1000,
+                    used=25,
+                    remaining=975,
+                    percentage=2.5,
+                    next_reset_ms=None,
+                    usage_details=(("search-prime", 20), ("web-reader", 5)),
+                ),
+            ),
+        )
+        call = client._client.get.call_args
+        assert call.args[0] == "https://api.z.ai/api/monitor/usage/quota/limit"
+        assert call.kwargs["headers"]["Authorization"] == "test-key"
+        assert "Bearer" not in call.kwargs["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_custom_endpoint_cannot_receive_usage_credentials(self):
+        from unittest.mock import AsyncMock
+
+        client = GlmClient(model="glm-5.2", base_url="https://proxy.example/v4")
+        client._client.get = AsyncMock()
+
+        with pytest.raises(GlmApiError, match="custom API endpoint"):
+            await client.query_plan_usage()
+        with pytest.raises(GlmApiError, match="custom API endpoint"):
+            client.query_plan_usage_sync()
+
+        client._client.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_malformed_or_empty_quota_response_fails_closed(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = GlmClient(model="glm-5.2")
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"data": {"limits": [{"type": "UNKNOWN"}]}}
+        client._client.get = AsyncMock(return_value=response)
+
+        with pytest.raises(GlmApiError, match="no supported quota"):
+            await client.query_plan_usage()
 
 
 # ============================================================

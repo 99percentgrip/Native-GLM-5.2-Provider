@@ -530,9 +530,39 @@ reasoning, tool, plan, usage, and session state, awaited fail-closed approval
 modals with bounded credential-redacted arguments, cancellation, and live settings
 that call `set_config_option`/`set_session_mode`. F1 must submit the shared
 `/help` command directly, F2 must report the reasoning-panel state, and
-presentation controls must also remain reachable through `/thinking`,
-`/settings`, and `/clear-view`. TUI state is presentation-only and must never
+presentation controls must also remain reachable through `/reasoning-panel`,
+`/settings`, and `/clear-view`. Typing `/` must show a keyboard- and
+pointer-selectable menu sourced from the agent's live `available_commands_update`
+plus presentation/configuration commands. `/plan`, `/thinking`, and `/model`
+must appear first and expose the exact API plans, model-compatible provider
+thinking levels, and plan-compatible models; `/api-plan`, `/endpoint`, and
+`/reasoning` remain aliases. `/permission`, `/mode`, `/generation`, `/auxiliary`,
+and `/mixture` must call the shared session configuration methods. F3 settings
+must initially and reactively filter models by plan and thinking levels by
+model. The empty-state layout keeps reasoning collapsed and uses compact status,
+activity, and plan surfaces. TUI state is presentation-only and must never
 become an alternate source of session truth or stored reasoning.
+
+The visible Footer quit binding is Ctrl-X because Ctrl-Q may be consumed by
+POSIX XON/XOFF flow control; F10 and `/exit` are equivalent, and Ctrl-Q remains
+hidden compatibility only. Footer entries must stay pointer-actionable.
+Shutdown cancels only the TUI's initialization, prompt, provider-usage, and
+settings workers through Textual's lifecycle, then bounds shared-agent cleanup
+to three seconds so a stalled subprocess cannot freeze terminal exit. TUI
+shutdown state must not reuse Textual `MessagePump` private names. Provider
+usage uses a daemon-backed synchronous request path in the TUI so stalled DNS
+cannot keep the UI event loop or process alive; ACP `/usage` retains the async
+client path.
+
+`GlmClient.query_plan_usage()` may issue one GET to the official Z.ai or
+BigModel HTTPS monitor origin derived from the configured endpoint. It sends the
+credential only to the fixed allowlist, normalizes at most 16 quota windows and
+32 MCP details per window, and returns no response bodies on errors.
+`GlmAcpAgent.query_provider_usage()` and `/usage` expose the same authoritative
+snapshot to ACP clients. The TUI performs one non-blocking startup refresh,
+shows 5-hour/weekly/MCP percentages in the sidebar, and refreshes details only
+on explicit `/usage` or plan changes; it must not estimate account quota from
+session token usage.
 
 ## Work Guidance
 

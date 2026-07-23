@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -84,6 +85,29 @@ class AuxiliaryResult:
     usage: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PlanQuota:
+    """One provider-reported Coding Plan quota window."""
+
+    kind: str
+    unit: int | None
+    number: int | None
+    limit: int | None
+    used: int | None
+    remaining: int | None
+    percentage: float | None
+    next_reset_ms: int | None
+    usage_details: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class PlanUsage:
+    """Normalized response from Z.ai's official Coding Plan usage endpoint."""
+
+    platform: str
+    quotas: tuple[PlanQuota, ...]
+
+
 class GlmClient:
     """Low-level streaming client for the Z.ai BigModel API."""
 
@@ -109,6 +133,18 @@ class GlmClient:
         self._active_request_task: asyncio.Task[Any] | None = None
         self.last_auxiliary_usage: dict[str, int] = {}
         self._api_key = get_api_key()
+        parsed_endpoint = urlsplit(endpoint)
+        allowed_usage_hosts = {
+            "api.z.ai": "Z.ai",
+            "open.bigmodel.cn": "BigModel (CN)",
+            "dev.bigmodel.cn": "BigModel (CN)",
+        }
+        self._usage_origin = (
+            f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}"
+            if parsed_endpoint.scheme == "https" and parsed_endpoint.hostname in allowed_usage_hosts
+            else ""
+        )
+        self._usage_platform = allowed_usage_hosts.get(parsed_endpoint.hostname or "", "")
         self._client = httpx.AsyncClient(
             base_url=endpoint,
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -333,6 +369,106 @@ class GlmClient:
             "total_tokens": int(usage.get("total_tokens", input_tokens + output_tokens) or 0),
             "cached_tokens": int(details.get("cached_tokens", 0) or 0),
         }
+
+    async def query_plan_usage(self) -> PlanUsage:
+        """Fetch current Coding Plan quota windows from the official monitor API.
+
+        The credential is sent only to Z.ai's allowlisted HTTPS hosts. The
+        official endpoint expects the raw API-key value in ``Authorization``.
+        """
+        if not self._usage_origin:
+            raise GlmApiError(400, "Plan usage is unavailable for a custom API endpoint")
+        response = await self._client.get(
+            f"{self._usage_origin}/api/monitor/usage/quota/limit",
+            headers=self._plan_usage_headers(),
+            timeout=20.0,
+        )
+        return self._parse_plan_usage_response(response)
+
+    def query_plan_usage_sync(self) -> PlanUsage:
+        """Fetch quota data synchronously for a kill-independent UI worker."""
+        if not self._usage_origin:
+            raise GlmApiError(400, "Plan usage is unavailable for a custom API endpoint")
+        response = httpx.get(
+            f"{self._usage_origin}/api/monitor/usage/quota/limit",
+            headers=self._plan_usage_headers(),
+            timeout=20.0,
+        )
+        return self._parse_plan_usage_response(response)
+
+    def _plan_usage_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": self._api_key,
+            "Accept-Language": "en-US,en",
+            "Content-Type": "application/json",
+        }
+
+    def _parse_plan_usage_response(self, response: httpx.Response) -> PlanUsage:
+        if response.status_code != 200:
+            raise GlmApiError(response.status_code, "Plan usage query failed")
+        try:
+            payload = response.json()
+            data = payload.get("data", payload)
+            raw_limits = data.get("limits", [])
+        except (AttributeError, TypeError, ValueError) as error:
+            raise GlmApiError(502, "Plan usage response was malformed") from error
+        if not isinstance(raw_limits, list):
+            raise GlmApiError(502, "Plan usage response was malformed")
+
+        quotas: list[PlanQuota] = []
+        for raw in raw_limits[:16]:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("type", ""))[:64]
+            if kind not in {"TOKENS_LIMIT", "TIME_LIMIT"}:
+                continue
+            details: list[tuple[str, int]] = []
+            raw_details = raw.get("usageDetails", [])
+            if isinstance(raw_details, list):
+                for detail in raw_details[:32]:
+                    if not isinstance(detail, dict):
+                        continue
+                    model = str(detail.get("modelCode", ""))[:80]
+                    used = self._safe_usage_int(detail.get("usage"))
+                    if model and used is not None:
+                        details.append((model, used))
+            percentage = self._safe_usage_float(raw.get("percentage"))
+            quotas.append(
+                PlanQuota(
+                    kind=kind,
+                    unit=self._safe_usage_int(raw.get("unit")),
+                    number=self._safe_usage_int(raw.get("number")),
+                    limit=self._safe_usage_int(raw.get("usage")),
+                    used=self._safe_usage_int(raw.get("currentValue")),
+                    remaining=self._safe_usage_int(raw.get("remaining")),
+                    percentage=percentage,
+                    next_reset_ms=self._safe_usage_int(raw.get("nextResetTime")),
+                    usage_details=tuple(details),
+                )
+            )
+        if not quotas:
+            raise GlmApiError(502, "Plan usage response contained no supported quota windows")
+        return PlanUsage(platform=self._usage_platform, quotas=tuple(quotas))
+
+    @staticmethod
+    def _safe_usage_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if 0 <= parsed <= 10**18 else None
+
+    @staticmethod
+    def _safe_usage_float(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if 0 <= parsed <= 100 else None
 
     @staticmethod
     def _format_transcript(messages: list[dict[str, Any]]) -> str:

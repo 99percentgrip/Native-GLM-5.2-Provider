@@ -513,10 +513,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v1.8.1` before running the Unix
-installer, or pass `-Version v1.8.1` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v1.8.2` before running the Unix
+installer, or pass `-Version v1.8.2` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v1.8.1](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.8.1).
+[v1.8.2](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.8.2).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -609,17 +609,37 @@ glm-acp chat --cwd /path/to/project --permission bypass --prompt "Fix and verify
 glm-acp chat --plain
 ```
 
-The TUI separates conversation, reasoning, tool activity, plan, context usage,
-and session state. F1 displays `/help`, F2 toggles reasoning with visible state
-feedback, and F3 opens live model,
-endpoint, reasoning, permission, generation, auxiliary, Mixture-of-Agents, and
-session-mode settings; Ctrl-C cancels the active turn, Ctrl-L clears only the
-visible transcript, and Ctrl-Q exits. Destructive Ask-mode actions use a bounded,
-credential-redacted approval modal and deny by default.
+The TUI uses a compact conversation-first layout; reasoning starts collapsed,
+while activity, plan, context, and session state remain visible without taking
+over the transcript. Type `/` to open the same live harness-command catalog
+advertised to Zed. Use Up/Down to navigate, Tab to complete, Enter to run or
+select, and Escape to close the menu.
 
-If a terminal reserves function keys, `/thinking`, `/settings`, and `/clear-view`
-provide the same presentation controls. Other slash commands—including `/status`,
-`/checkpoint`, and `/awareness`—continue through the shared ACP agent runtime.
+`/plan` directly switches among **Coding Plan**, **Standard API**, and
+**BigModel (CN)**. `/thinking` selects **Off**, **Standard**, **Deep · High**, or
+**Deep · Max** when supported by the active model. `/model`, `/permission`,
+`/mode`, `/generation`, `/auxiliary`, and `/mixture` expose the remaining live
+session controls through the same APIs as ACP editors. `/api-plan` and
+`/endpoint` remain aliases for `/plan`; `/reasoning` remains an alias for
+`/thinking`.
+
+F1 displays `/help`, F2 toggles the live reasoning view, and F3 opens all session
+settings with models filtered by API plan and thinking levels filtered by model.
+Ctrl-C cancels the active turn, Ctrl-L clears only the visible transcript, and
+Ctrl-X exits; F10 and `/exit` are equivalent. Ctrl-Q remains a hidden
+compatibility binding because POSIX XON/XOFF terminals commonly swallow it.
+Destructive Ask-mode actions use a bounded, credential-redacted
+approval modal and deny by default. If a terminal reserves function keys,
+`/reasoning-panel`, `/settings`, and `/clear-view` provide the same presentation
+controls. Other slash commands—including `/status`, `/checkpoint`, and
+`/awareness`—continue through the shared ACP agent runtime.
+
+The session sidebar fetches authoritative Coding Plan quota telemetry once at
+startup. Use `/usage` to refresh and display the provider-reported 5-hour model,
+weekly model, and monthly MCP usage, remaining allowance, and reset time. The
+query goes only to Z.ai's allowlisted HTTPS monitor endpoint and is never
+estimated from local token counts; custom API hosts cannot receive the stored
+credential.
 
 Use `/image path/to/image.png` in an interactive chat to queue an image for the
 next prompt, or repeat `--image PATH` for a one-shot vision prompt. `--json`
@@ -898,7 +918,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-1.8.1.dist-info  (and editable-install metadata)
+# expect: glm_acp-1.8.2.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
