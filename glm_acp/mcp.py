@@ -190,6 +190,43 @@ def load_mcp_servers() -> dict[str, dict[str, Any]]:
     return servers
 
 
+def save_mcp_server(name: str, config: dict[str, Any]) -> None:
+    """Add or update a custom MCP server in the config file."""
+    if name in DEFAULT_SERVERS:
+        raise McpError(f"Cannot override built-in server: {name}")
+    path = mcp_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    servers = payload.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        payload["servers"] = servers
+    servers[name] = config
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def remove_mcp_server(name: str) -> bool:
+    """Remove a custom MCP server from the config file. Returns True if removed."""
+    if name in DEFAULT_SERVERS:
+        raise McpError(f"Cannot remove built-in server: {name}")
+    path = mcp_config_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    servers = payload.get("servers", {}) if isinstance(payload, dict) else {}
+    if not isinstance(servers, dict) or name not in servers:
+        return False
+    del servers[name]
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 @dataclass
 class McpResponse:
     result: Any

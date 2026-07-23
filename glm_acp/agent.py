@@ -4130,6 +4130,13 @@ class GlmAcpAgent(acp.Agent):
                 name="ci",
                 description="Show recent CI run status via gh CLI",
             ),
+            AvailableCommand(
+                name="mcp",
+                description=(
+                    "Manage MCP servers: /mcp, /mcp add <name> <url>, "
+                    "/mcp remove <name>, /mcp tools <name>, /mcp test <name>"
+                ),
+            ),
         ]
         update = update_available_commands(commands)
         await self._conn.session_update(session_id=session.id, update=update)
@@ -4966,6 +4973,9 @@ class GlmAcpAgent(acp.Agent):
 
             return await ci_status(session.cwd)
 
+        elif command.startswith("/mcp"):
+            return await self._handle_mcp(session, command)
+
         else:
             return (
                 f"Unknown command: {command}\nAvailable commands: /compact, "
@@ -4974,8 +4984,101 @@ class GlmAcpAgent(acp.Agent):
                 "/skills, /profile, /curator, /sessions"
                 ", /lineage, /goal, /subgoal"
                 ", /checkpoint, /rollback, /plugins"
-                ", /version, /release, /ci"
+                ", /version, /release, /ci, /mcp"
             )
+
+    async def _handle_mcp(self, session: Session, command: str) -> str:
+        """Manage MCP servers: list, add, remove, tools, test."""
+        from .mcp import (
+            DEFAULT_SERVERS,
+            McpError,
+            load_mcp_servers,
+            remove_mcp_server,
+            save_mcp_server,
+        )
+
+        parts = command.split()
+
+        if len(parts) == 1:
+            servers = self._mcp.servers
+            lines = ["## MCP Servers\n"]
+            for name, config in sorted(servers.items()):
+                server_type = "stdio" if config.get("command") else "HTTP"
+                builtin = "built-in" if name in DEFAULT_SERVERS else "custom"
+                endpoint = config.get("url", config.get("command", "?"))
+                lines.append(f"- **{name}** ({builtin}, {server_type}): `{endpoint}`")
+            lines.append(
+                "\n`/mcp add <name> <url>` — add custom server\n"
+                "`/mcp remove <name>` — remove custom server\n"
+                "`/mcp tools <name>` — list server tools\n"
+                "`/mcp test <name>` — test connection"
+            )
+            return "\n".join(lines)
+
+        subcommand = parts[1]
+
+        if subcommand == "add":
+            if len(parts) < 4:
+                return "Usage: `/mcp add <name> <url>`"
+            name = parts[2]
+            url = parts[3]
+            try:
+                save_mcp_server(name, {"url": url})
+                self._mcp.servers = load_mcp_servers()
+                return (
+                    f"**Added MCP server `{name}`** at `{url}`.\n\n"
+                    f"Use `/mcp test {name}` to verify the connection."
+                )
+            except McpError as exc:
+                return str(exc)
+
+        if subcommand == "remove":
+            if len(parts) < 3:
+                return "Usage: `/mcp remove <name>`"
+            name = parts[2]
+            try:
+                if remove_mcp_server(name):
+                    self._mcp.servers = load_mcp_servers()
+                    return f"**Removed MCP server `{name}`.**"
+                return f"Server `{name}` not found in custom config."
+            except McpError as exc:
+                return str(exc)
+
+        if subcommand == "tools":
+            if len(parts) < 3:
+                return "Usage: `/mcp tools <name>`"
+            name = parts[2]
+            try:
+                tools = await self._mcp.list_tools(name)
+                if not tools:
+                    return f"No tools found on server `{name}`."
+                lines = [f"## Tools from `{name}` ({len(tools)})\n"]
+                for tool in tools:
+                    tool_name = tool.get("name", "?")
+                    desc = str(tool.get("description", ""))[:80]
+                    lines.append(f"- **{tool_name}** — {desc}")
+                return "\n".join(lines)
+            except (McpError, Exception) as exc:
+                return f"Error listing tools from `{name}`: {exc}"
+
+        if subcommand == "test":
+            if len(parts) < 3:
+                return "Usage: `/mcp test <name>`"
+            name = parts[2]
+            try:
+                tools = await self._mcp.list_tools(name)
+                return (
+                    f"✅ **Server `{name}` is reachable** — "
+                    f"{len(tools)} tool(s) available."
+                )
+            except Exception as exc:
+                return f"❌ **Server `{name}` connection failed**: {exc}"
+
+        return (
+            f"Unknown subcommand: `{subcommand}`.\n\n"
+            "Use: `/mcp`, `/mcp add <name> <url>`, `/mcp remove <name>`, "
+            "`/mcp tools <name>`, `/mcp test <name>`"
+        )
 
     # ------------------------------------------------------------------
     # Context compaction

@@ -3,7 +3,13 @@ import json
 import httpx
 import pytest
 
-from glm_acp.mcp import McpManager, load_mcp_servers
+from glm_acp.mcp import (
+    McpError,
+    McpManager,
+    load_mcp_servers,
+    remove_mcp_server,
+    save_mcp_server,
+)
 
 
 def test_builtin_servers_include_all_zai_capabilities():
@@ -126,3 +132,62 @@ async def test_expired_http_session_reinitializes_once(monkeypatch):
     assert methods.count("initialize") == 2
     assert methods.count("tools/call") == 2
     await manager.aclose()
+
+
+def test_save_mcp_server_creates_config(monkeypatch, tmp_path):
+    """save_mcp_server writes a new server to the config file."""
+    config_file = tmp_path / "mcp.json"
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(config_file))
+
+    save_mcp_server("my-server", {"url": "https://example.com/mcp"})
+
+    assert config_file.exists()
+    data = json.loads(config_file.read_text())
+    assert data["servers"]["my-server"]["url"] == "https://example.com/mcp"
+
+
+def test_save_mcp_server_protects_builtins(monkeypatch, tmp_path):
+    """save_mcp_server rejects overriding built-in Z.ai presets."""
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(tmp_path / "mcp.json"))
+
+    with pytest.raises(McpError, match="Cannot override"):
+        save_mcp_server("zai_search", {"url": "https://evil.com"})
+
+
+def test_remove_mcp_server(monkeypatch, tmp_path):
+    """remove_mcp_server deletes a custom server from the config."""
+    config_file = tmp_path / "mcp.json"
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(config_file))
+
+    save_mcp_server("temp-server", {"url": "https://example.com"})
+    assert remove_mcp_server("temp-server") is True
+
+    data = json.loads(config_file.read_text())
+    assert "temp-server" not in data.get("servers", {})
+
+
+def test_remove_mcp_server_not_found(monkeypatch, tmp_path):
+    """remove_mcp_server returns False when the server doesn't exist."""
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(tmp_path / "mcp.json"))
+    assert remove_mcp_server("nonexistent") is False
+
+
+def test_remove_mcp_server_protects_builtins(monkeypatch, tmp_path):
+    """remove_mcp_server rejects removing built-in Z.ai presets."""
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(tmp_path / "mcp.json"))
+
+    with pytest.raises(McpError, match="Cannot remove"):
+        remove_mcp_server("zai_search")
+
+
+def test_save_then_load_round_trip(monkeypatch, tmp_path):
+    """A saved custom server appears in load_mcp_servers alongside built-ins."""
+    monkeypatch.setenv("GLM_ACP_MCP_CONFIG", str(tmp_path / "mcp.json"))
+
+    save_mcp_server("custom", {"url": "https://my.server/mcp"})
+    servers = load_mcp_servers()
+
+    assert "custom" in servers
+    assert servers["custom"]["url"] == "https://my.server/mcp"
+    assert "zai_search" in servers
+    assert "zai_reader" in servers
