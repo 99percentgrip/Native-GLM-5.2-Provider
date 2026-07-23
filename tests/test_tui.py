@@ -797,6 +797,58 @@ async def test_tui_settings_initial_choices_follow_current_plan_and_model(tmp_pa
         app.exit(0)
 
 
+@pytest.mark.asyncio
+async def test_tui_composer_stays_enabled_and_queues_prompts_during_turn(tmp_path):
+    """While the agent works, the composer stays enabled and Enter queues prompts."""
+    agent = SlowAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+
+        composer = app.query_one("#composer", Input)
+
+        # Start first prompt — SlowAgent blocks on prompt_release
+        composer.value = "First task"
+        await pilot.press("enter")
+        await asyncio.wait_for(agent.prompt_started.wait(), timeout=1)
+        assert app._prompt_worker is not None
+
+        # Composer must remain enabled while the agent works
+        assert composer.disabled is False
+
+        # While busy, queue two more prompts
+        composer.value = "Second task"
+        await pilot.press("enter")
+        assert len(app._prompt_queue) == 1
+        assert app._prompt_queue[0] == "Second task"
+
+        composer.value = "Third task"
+        await pilot.press("enter")
+        assert len(app._prompt_queue) == 2
+
+        # Queue display should show the count and preview
+        queue_text = str(app.query_one("#queue-status", Static).render())
+        assert "Queue (2)" in queue_text
+        assert "Second task" in queue_text
+
+        # Release the first prompt — queue should drain automatically
+        agent.prompt_release.set()
+        for _ in range(60):
+            await pilot.pause(0.05)
+            if app._prompt_worker is None and not app._prompt_queue:
+                break
+
+        # All three prompts should have been sent to the agent in order
+        assert len(agent.prompts) == 3
+        assert app._prompt_queue == []
+        assert app._prompt_worker is None
+
+        # Queue display should be empty after draining
+        assert str(app.query_one("#queue-status", Static).render()) == ""
+        app.exit(0)
+
+
 def test_interactive_chat_routes_to_tui(monkeypatch, tmp_path):
     args = _args(tmp_path)
     called = []

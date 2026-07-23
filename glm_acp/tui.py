@@ -527,6 +527,10 @@ class NativeGlmTui(App[int]):
         height: 1; margin: 0 2; color: #85c8ff;
         background: #0b1017;
     }
+    #queue-status {
+        height: 1; margin: 0 2; color: #f6c85f;
+        background: #0b1017;
+    }
     #composer {
         height: 3; margin: 0 1; border: tall #2589d8;
         background: #111a24;
@@ -558,6 +562,7 @@ class NativeGlmTui(App[int]):
         self._shutdown_requested = False
         self._agent_closed = False
         self._prompt_worker: Worker[None] | None = None
+        self._prompt_queue: list[str] = []
         self._replaying = False
         self._current_agent: Static | None = None
         self._current_agent_text = ""
@@ -605,6 +610,7 @@ class NativeGlmTui(App[int]):
             markup=False,
         )
         yield Static("◌ Starting session", id="activity-status", markup=False)
+        yield Static("", id="queue-status", markup=False)
         yield CommandInput(
             placeholder="Ask Native GLM ACP… (/help for commands)",
             id="composer",
@@ -675,7 +681,7 @@ class NativeGlmTui(App[int]):
             return
         if completion == "selected":
             text = event.input.value.strip()
-        if not text or not self._agent_ready or self._prompt_worker is not None:
+        if not text or not self._agent_ready:
             return
         event.input.clear()
         if await self._handle_local_command(text):
@@ -689,12 +695,15 @@ class NativeGlmTui(App[int]):
                 self._pending_images.append(path)
                 await self._append_system(f"Queued image for the next prompt: {path}")
             return
+        if self._prompt_worker is not None:
+            self._prompt_queue.append(text)
+            self._refresh_queue_display()
+            return
         await self._append_user(text)
         self._current_agent = None
         self._current_agent_text = ""
         self._thinking_text = ""
         self.query_one("#thinking", RichLog).clear()
-        event.input.disabled = True
         self._refresh_session_panel("Running")
         self._set_activity("Thinking", active=True)
         self._prompt_worker = self.run_prompt(text, list(self._pending_images))
@@ -962,23 +971,39 @@ class NativeGlmTui(App[int]):
 
         outcome = "completed"
         try:
-            await self.agent.prompt(
-                prompt=_prompt_blocks(text, images),
-                session_id=self.session_id,
-                message_id=str(uuid4()),
-            )
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            await self._append_system("Turn cancelled.")
-            raise
-        except Exception as error:
-            outcome = "failed"
-            await self._append_system(f"Turn failed: {error}")
+            while True:
+                try:
+                    await self.agent.prompt(
+                        prompt=_prompt_blocks(text, images),
+                        session_id=self.session_id,
+                        message_id=str(uuid4()),
+                    )
+                except asyncio.CancelledError:
+                    outcome = "cancelled"
+                    await self._append_system("Turn cancelled.")
+                    raise
+                except Exception as error:
+                    outcome = "failed"
+                    await self._append_system(f"Turn failed: {error}")
+                    return
+
+                if not self._prompt_queue or self._shutdown_requested:
+                    return
+
+                text = self._prompt_queue.pop(0)
+                images = []
+                self._refresh_queue_display()
+                await self._append_user(text)
+                self._current_agent = None
+                self._current_agent_text = ""
+                self._thinking_text = ""
+                self.query_one("#thinking", RichLog).clear()
+                self._refresh_session_panel("Running from queue")
+                self._set_activity("Thinking", active=True)
         finally:
             self._prompt_worker = None
             if not self._shutdown_requested:
                 composer = self.query_one("#composer", Input)
-                composer.disabled = False
                 composer.focus()
                 self._refresh_session_panel("Ready")
                 if outcome == "completed":
@@ -1207,6 +1232,19 @@ class NativeGlmTui(App[int]):
         if observations:
             return f"⬡ {exec_mode} · {observations} evidence · risk {risk}"
         return f"⬡ {exec_mode} · risk {risk}"
+
+    def _refresh_queue_display(self) -> None:
+        """Update the queue-status widget to show queued prompts."""
+        widget = self.query_one("#queue-status", Static)
+        if not self._prompt_queue:
+            widget.update("")
+            return
+        count = len(self._prompt_queue)
+        preview = " · ".join(
+            f"[{i + 1}] {item[:60]}" for i, item in enumerate(self._prompt_queue[:3])
+        )
+        suffix = f" (+{count - 3} more)" if count > 3 else ""
+        widget.update(f"📋 Queue ({count}): {preview}{suffix}")
 
     def _quota_summary(self) -> str:
         if self._provider_usage is None:
