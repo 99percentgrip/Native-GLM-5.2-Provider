@@ -48,21 +48,21 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Install locked dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --frozen --extra dev --extra voice
       - name: Verify tag matches package version
         shell: bash
         run: test "${GITHUB_REF_NAME#v}" = "$(uv run --frozen python -c 'from glm_acp import __version__; print(__version__)')"
       - name: Run tests
         run: uv run --frozen pytest tests/ -q
       - name: Build frozen executable
-        run: uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp glm_acp/launcher.py
+        run: uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers glm_acp/launcher.py
       - name: Verify frozen executable
         shell: bash
         run: |
           test "$("dist/${{ matrix.binary }}" --version)" = "${GITHUB_REF_NAME#v}"
           "dist/${{ matrix.binary }}" chat --help | grep -q -- "--plain"
       - name: Enforce frozen executable size ceiling
-        run: python -c "from pathlib import Path; size=Path('dist/${{ matrix.binary }}').stat().st_size; print(f'{size} bytes'); assert size < 40 * 1024 * 1024"
+        run: python -c "from pathlib import Path; size=Path('dist/${{ matrix.binary }}').stat().st_size; print(f'{size} bytes'); assert size < 200 * 1024 * 1024"
       - name: Package Unix executable
         if: matrix.archive == 'tar.gz'
         shell: bash

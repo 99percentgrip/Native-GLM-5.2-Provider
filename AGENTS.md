@@ -111,8 +111,8 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 
 ## Current Project Status
 
-- Package and ACP implementation version is `1.9.0` from `glm_acp.__version__`.
-- GitHub release `v1.9.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `1.9.1` from `glm_acp.__version__`.
+- GitHub release `v1.9.1` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - `glm-acp chat` and `native-glm-acp chat` open a cross-platform full-screen Textual interface over the full existing `GlmAcpAgent` runtime without an editor; a live `/` completion menu consumes the same available-command updates as Zed, puts API-plan/thinking/model controls first, and exposes every session setting through the shared APIs. Reasoning starts collapsed; F2 and `/reasoning-panel` toggle only its view, while `/thinking` changes the actual provider level. The composer retains terminal-routed or Ctrl-V OS clipboard content as a usable single-line prompt and stays fully above the footer. A bounded, low-overhead activity line animates startup, thinking, reasoning, tool work, and cancellation, then reports approval/completion/failure/ready states without becoming runtime truth; `GLM_ACP_TUI_ANIMATION=0` disables motion. Compact conversation/activity/plan/status panels, credential-redacted modal approvals, F1 help, F3 settings, `/settings`, and `/clear-view` remain presentation-only while persistence, tools, MCP/browser integration, workers, learning, awareness, repository intelligence, checkpoints, and verification stay shared with ACP clients. `--plain`, `--prompt`, `--stdin`, and `--json` preserve line and automation surfaces.
@@ -173,7 +173,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-1.9.0.dist-info
+# expect: editable glm_acp metadata and glm_acp-1.9.1.dist-info
 ```
 
 ## Verification
