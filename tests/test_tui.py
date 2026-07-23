@@ -11,13 +11,20 @@ import pytest
 from acp.helpers import update_available_commands
 from acp.schema import AvailableCommand, PermissionOption
 from textual import events
+from textual._xterm_parser import XTermParser
 from textual.widgets import Footer, Input, OptionList, Select, Static
 from textual.widgets._footer import FooterKey
 
 from glm_acp.cli import build_parser
 from glm_acp.glm_client import PlanQuota, PlanUsage
 from glm_acp.terminal_cli import run_chat_command
-from glm_acp.tui import CONFIG_COMMANDS, NativeGlmTui, PermissionScreen, SettingsScreen
+from glm_acp.tui import (
+    CONFIG_COMMANDS,
+    NativeGlmTui,
+    PermissionScreen,
+    SettingsScreen,
+    _read_system_clipboard,
+)
 
 
 class FakeAgent:
@@ -231,14 +238,59 @@ async def test_tui_multiline_paste_is_retained_and_composer_does_not_overlap_foo
         composer = app.query_one("#composer", Input)
         footer = app.query_one(Footer)
 
-        composer.post_message(
-            events.Paste("\nPlease inspect this pasted prompt.\nKeep its content.")
-        )
+        terminal_bytes = "\x1b[200~\nPlease inspect this pasted prompt.\nKeep its content.\x1b[201~"
+        messages = list(XTermParser().feed(terminal_bytes))
+        assert len(messages) == 1
+        assert isinstance(messages[0], events.Paste)
+        assert app._driver is not None
+        app._driver.send_message(messages[0])
         await pilot.pause()
 
         assert composer.value == "Please inspect this pasted prompt. Keep its content."
         assert composer.region.bottom <= footer.region.y
         app.exit(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shortcut", ["ctrl+v", "ctrl+shift+v"])
+async def test_tui_clipboard_shortcuts_read_external_system_clipboard(
+    tmp_path, monkeypatch, shortcut
+):
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+    monkeypatch.setattr(
+        "glm_acp.tui._read_system_clipboard",
+        lambda: "\nCopied outside the TUI.\nRetain this prompt.",
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        composer = app.query_one("#composer", Input)
+        assert app.clipboard == ""
+
+        await pilot.press(shortcut)
+
+        assert composer.value == "Copied outside the TUI. Retain this prompt."
+        app.exit(0)
+
+
+def test_system_clipboard_reader_does_not_inherit_credentials(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("ZAI_API_KEY", "must-not-reach-clipboard-process")
+    monkeypatch.setattr("glm_acp.tui.shutil.which", lambda name: f"/safe/{name}")
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        captured["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(returncode=0, stdout="external clipboard text")
+
+    monkeypatch.setattr("glm_acp.tui.subprocess.run", fake_run)
+
+    assert _read_system_clipboard() == "external clipboard text"
+    assert captured["command"]
+    assert captured["timeout"] == 1.0
+    assert "ZAI_API_KEY" not in captured["environment"]
 
 
 @pytest.mark.asyncio

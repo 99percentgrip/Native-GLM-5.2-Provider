@@ -543,9 +543,13 @@ model. The empty-state layout keeps reasoning collapsed and uses compact status,
 activity, and plan surfaces. TUI state is presentation-only and must never
 become an alternate source of session truth or stored reasoning.
 
-The single-line composer must normalize terminal bracketed multiline paste into
-one retained prompt rather than inheriting Textual `Input`'s first-line-only
-behavior; leading blank lines cannot erase the paste. It remains in normal
+The single-line composer must normalize terminal-routed, explicit Ctrl-V, or
+explicit Ctrl-Shift-V multiline paste into one retained prompt rather than inheriting Textual
+`Input`'s first-line-only behavior or its app-internal-only clipboard; leading
+blank lines cannot erase the paste. OS clipboard fallbacks use `pbpaste`,
+PowerShell `Get-Clipboard`, `wl-paste`, `xclip`, or `xsel` only when available,
+only on an explicit paste shortcut, without a shell or credential environment, with a
+one-second timeout and one-million-character bound. It remains in normal
 vertical flow so its full three-row border ends at or before the Footer instead
 of being clipped by overlapping dock layout.
 

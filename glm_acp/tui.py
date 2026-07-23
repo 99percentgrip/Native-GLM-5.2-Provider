@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -83,11 +86,71 @@ CONFIG_COMMANDS = {
     "/endpoint": ("api_endpoint", "API plan"),
 }
 
+MAX_CLIPBOARD_CHARS = 1_000_000
+
+
+def _read_system_clipboard() -> str:
+    """Read the OS clipboard for an explicit Ctrl-V without invoking a shell."""
+    if sys.platform == "darwin":
+        commands = [("pbpaste",)]
+    elif os.name == "nt":
+        commands = [
+            ("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
+            ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"),
+        ]
+    else:
+        commands = []
+        if os.environ.get("WAYLAND_DISPLAY"):
+            commands.append(("wl-paste",))
+        commands.extend(
+            [
+                ("xclip", "-selection", "clipboard", "-out"),
+                ("xsel", "--clipboard", "--output"),
+            ]
+        )
+    allowed_environment = {
+        name: value
+        for name in (
+            "DISPLAY",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "PATH",
+            "SystemRoot",
+            "USERPROFILE",
+            "WAYLAND_DISPLAY",
+            "WINDIR",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+        )
+        if (value := os.environ.get(name))
+    }
+    for command in commands:
+        executable = shutil.which(command[0])
+        if executable is None:
+            continue
+        try:
+            result = subprocess.run(
+                (executable, *command[1:]),
+                capture_output=True,
+                check=False,
+                encoding="utf-8",
+                errors="replace",
+                env=allowed_environment,
+                timeout=1.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and result.stdout:
+            return result.stdout[:MAX_CLIPBOARD_CHARS].rstrip("\r\n")
+    return ""
+
 
 class CommandInput(Input):
     """Composer input with command-menu navigation while focus stays in place."""
 
     BINDINGS = [
+        Binding("ctrl+shift+v", "paste_system", show=False, priority=True),
         Binding("tab", "command_complete", show=False, priority=True),
         Binding("up", "command_up", show=False, priority=True),
         Binding("down", "command_down", show=False, priority=True),
@@ -116,7 +179,10 @@ class CommandInput(Input):
 
     def _on_paste(self, event: events.Paste) -> None:
         """Keep a multiline terminal paste usable in the single-line composer."""
-        text = event.text
+        self._insert_pasted_text(event.text)
+        event.stop()
+
+    def _insert_pasted_text(self, text: str) -> None:
         if "\n" in text or "\r" in text:
             text = " ".join(text.splitlines()).strip()
         if text:
@@ -125,7 +191,25 @@ class CommandInput(Input):
                 self.insert_text_at_cursor(text)
             else:
                 self.replace(text, *selection)
-        event.stop()
+
+    def action_paste(self) -> None:
+        """Paste the internal clipboard or explicitly read the OS clipboard."""
+        text = self.app.clipboard or _read_system_clipboard()
+        self._apply_clipboard_text(text)
+
+    def action_paste_system(self) -> None:
+        """Read the OS clipboard for terminals that deliver Ctrl-Shift-V as a key."""
+        text = _read_system_clipboard() or self.app.clipboard
+        self._apply_clipboard_text(text)
+
+    def _apply_clipboard_text(self, text: str) -> None:
+        if text:
+            self._insert_pasted_text(text)
+        else:
+            self.app.notify(
+                "Clipboard is empty or unavailable; try the terminal paste shortcut",
+                severity="warning",
+            )
 
 
 class PermissionScreen(ModalScreen[bool]):

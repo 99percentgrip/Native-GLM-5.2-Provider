@@ -65,6 +65,7 @@ def test_unix_installer_verifies_and_installs_both_commands(tmp_path):
     )
     assert "Next: glm-acp --setup" in result.stdout
     assert "full-screen agent: glm-acp chat" in result.stdout
+    assert "paste with Ctrl-Shift-V on Linux" in result.stdout
     assert "type / for the live menu" in result.stdout
     assert "Ctrl-X to exit" in result.stdout
 

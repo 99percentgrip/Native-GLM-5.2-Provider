@@ -16,8 +16,8 @@ Own public, runtime-free installation entry points for GitHub release binaries.
 - Installation is user-local by default and must not require administrator privileges.
 - Both `native-glm-acp` and the user-facing `glm-acp` command must be installed.
 - Successful installation points users to credential setup, the full-screen
-  `glm-acp chat` frontend, its live `/` command menu, normal prompt paste, and
-  Ctrl-X exit.
+  `glm-acp chat` frontend, its live `/` command menu, Linux Ctrl-Shift-V or the
+  platform terminal paste shortcut, and Ctrl-X exit.
 - Any PATH modification must retain the exact `# Native GLM ACP` marker consumed by `glm-acp --uninstall`.
 - Unsupported operating systems and architectures fail with an actionable message.
 
