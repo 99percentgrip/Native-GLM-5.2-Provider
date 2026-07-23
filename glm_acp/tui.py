@@ -15,7 +15,7 @@ from acp.schema import AllowedOutcome, DeniedOutcome, RequestPermissionResponse
 from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -113,6 +113,19 @@ class CommandInput(Input):
         app = self.app
         if isinstance(app, NativeGlmTui):
             app.hide_command_menu()
+
+    def _on_paste(self, event: events.Paste) -> None:
+        """Keep a multiline terminal paste usable in the single-line composer."""
+        text = event.text
+        if "\n" in text or "\r" in text:
+            text = " ".join(text.splitlines()).strip()
+        if text:
+            selection = self.selection
+            if selection.is_empty:
+                self.insert_text_at_cursor(text)
+            else:
+                self.replace(text, *selection)
+        event.stop()
 
 
 class PermissionScreen(ModalScreen[bool]):
@@ -431,7 +444,7 @@ class NativeGlmTui(App[int]):
         background: #0b1017;
     }
     #composer {
-        dock: bottom; height: 3; margin: 0 1; border: tall #2589d8;
+        height: 3; margin: 0 1; border: tall #2589d8;
         background: #111a24;
     }
     Footer { background: #111a24; }

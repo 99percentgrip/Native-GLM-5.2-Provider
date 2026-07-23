@@ -543,6 +543,12 @@ model. The empty-state layout keeps reasoning collapsed and uses compact status,
 activity, and plan surfaces. TUI state is presentation-only and must never
 become an alternate source of session truth or stored reasoning.
 
+The single-line composer must normalize terminal bracketed multiline paste into
+one retained prompt rather than inheriting Textual `Input`'s first-line-only
+behavior; leading blank lines cannot erase the paste. It remains in normal
+vertical flow so its full three-row border ends at or before the Footer instead
+of being clipped by overlapping dock layout.
+
 The composer-adjacent activity line derives only from existing TUI lifecycle
 and ACP session updates. It animates startup, thinking, reasoning, tool work,
 and cancellation with a single paused-when-idle timer; approval, completion,

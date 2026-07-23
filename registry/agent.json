@@ -1,7 +1,7 @@
 {
   "id": "native-glm-acp",
   "name": "Native GLM ACP",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "Native GLM ACP — an open-source ACP-native coding agent runtime for Z.ai GLM models.",
   "repository": "https://github.com/99percentgrip/Native-GLM-ACP",
   "website": "https://github.com/99percentgrip/Native-GLM-ACP",
@@ -12,23 +12,23 @@
   "distribution": {
     "binary": {
       "darwin-x86_64": {
-        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.3/native-glm-acp-darwin-x86_64.tar.gz",
+        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.4/native-glm-acp-darwin-x86_64.tar.gz",
         "cmd": "./native-glm-acp"
       },
       "darwin-aarch64": {
-        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.3/native-glm-acp-darwin-aarch64.tar.gz",
+        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.4/native-glm-acp-darwin-aarch64.tar.gz",
         "cmd": "./native-glm-acp"
       },
       "linux-x86_64": {
-        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.3/native-glm-acp-linux-x86_64.tar.gz",
+        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.4/native-glm-acp-linux-x86_64.tar.gz",
         "cmd": "./native-glm-acp"
       },
       "linux-aarch64": {
-        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.3/native-glm-acp-linux-aarch64.tar.gz",
+        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.4/native-glm-acp-linux-aarch64.tar.gz",
         "cmd": "./native-glm-acp"
       },
       "windows-x86_64": {
-        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.3/native-glm-acp-windows-x86_64.zip",
+        "archive": "https://github.com/99percentgrip/Native-GLM-ACP/releases/download/v1.8.4/native-glm-acp-windows-x86_64.zip",
         "cmd": "./native-glm-acp.exe"
       }
     }

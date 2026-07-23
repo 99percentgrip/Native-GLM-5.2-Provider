@@ -63,7 +63,7 @@ try {
     Write-Host ""
     Write-Host "Open a new terminal, then run: glm-acp --setup"
     Write-Host "Then start the full-screen agent: glm-acp chat"
-    Write-Host "Inside the TUI, type / for the live menu, follow the animated status line, and press Ctrl-X to exit."
+    Write-Host "Inside the TUI, type / for the live menu, paste prompts normally, and press Ctrl-X to exit."
 } finally {
     Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
 }

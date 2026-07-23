@@ -10,7 +10,8 @@ import acp
 import pytest
 from acp.helpers import update_available_commands
 from acp.schema import AvailableCommand, PermissionOption
-from textual.widgets import Input, OptionList, Select, Static
+from textual import events
+from textual.widgets import Footer, Input, OptionList, Select, Static
 from textual.widgets._footer import FooterKey
 
 from glm_acp.cli import build_parser
@@ -216,6 +217,28 @@ async def test_tui_mounts_full_screen_panels_and_toggles_thinking(tmp_path):
         app.exit(0)
 
     assert agent.closed is True
+
+
+@pytest.mark.asyncio
+async def test_tui_multiline_paste_is_retained_and_composer_does_not_overlap_footer(
+    tmp_path,
+):
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        composer = app.query_one("#composer", Input)
+        footer = app.query_one(Footer)
+
+        composer.post_message(
+            events.Paste("\nPlease inspect this pasted prompt.\nKeep its content.")
+        )
+        await pilot.pause()
+
+        assert composer.value == "Please inspect this pasted prompt. Keep its content."
+        assert composer.region.bottom <= footer.region.y
+        app.exit(0)
 
 
 @pytest.mark.asyncio
