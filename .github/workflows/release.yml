@@ -48,6 +48,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+      - name: Install voice dependencies (onnxruntime has no macOS Intel wheel)
+        if: matrix.target != 'darwin-x86_64'
         run: uv sync --frozen --extra dev --extra voice
       - name: Verify tag matches package version
         shell: bash
@@ -55,7 +58,13 @@ jobs:
       - name: Run tests
         run: uv run --frozen pytest tests/ -q
       - name: Build frozen executable
-        run: uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers glm_acp/launcher.py
+        shell: bash
+        run: |
+          VOICE_FLAGS=""
+          if [ "${{ matrix.target }}" != "darwin-x86_64" ]; then
+            VOICE_FLAGS="--collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers"
+          fi
+          uv run --frozen pyinstaller --noconfirm --clean --onefile --name native-glm-acp --collect-all acp $VOICE_FLAGS glm_acp/launcher.py
       - name: Verify frozen executable
         shell: bash
         run: |
