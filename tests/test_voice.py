@@ -78,7 +78,13 @@ def test_send_notification_fires_for_long_turns(monkeypatch):
     voice._NOTIFY_ENABLED = True
     voice._last_notify = 0.0
     calls = []
-    monkeypatch.setattr(voice, "_notify_linux", lambda *a, **kw: calls.append(a))
+
+    def fake_notify(*a, **kw):
+        calls.append(a)
+
+    monkeypatch.setattr(voice, "_notify_linux", fake_notify)
+    monkeypatch.setattr(voice, "_notify_macos", fake_notify)
+    monkeypatch.setattr(voice, "_notify_windows", fake_notify)
     voice.send_notification("title", "msg", turn_duration=15.0)
     assert len(calls) == 1
 
