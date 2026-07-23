@@ -868,7 +868,7 @@ class TestPlanToolEdgeCases:
                 {"content": "Task 4", "status": "todo", "priority": "medium"},
             ]
         }
-        result = await agent._handle_update_plan(session, "tc1", args)
+        await agent._handle_update_plan(session, "tc1", args)
         assert session.plan[0]["status"] == "completed"
         assert session.plan[1]["status"] == "in_progress"
         assert session.plan[2]["status"] == "in_progress"
@@ -885,7 +885,7 @@ class TestPlanToolEdgeCases:
                 {"content": "Task 4", "status": "pending", "priority": "bogus"},
             ]
         }
-        result = await agent._handle_update_plan(session, "tc1", args)
+        await agent._handle_update_plan(session, "tc1", args)
         assert session.plan[0]["priority"] == "high"
         assert session.plan[1]["priority"] == "high"
         assert session.plan[2]["priority"] == "medium"
@@ -899,7 +899,7 @@ class TestPlanToolEdgeCases:
                 {"content": "Task", "status": "banana", "priority": "high"},
             ]
         }
-        result = await agent._handle_update_plan(session, "tc1", args)
+        await agent._handle_update_plan(session, "tc1", args)
         assert session.plan[0]["status"] == "pending"
 
     @pytest.mark.asyncio
@@ -936,7 +936,7 @@ class TestPlanToolEdgeCases:
                 {"content": "just content"},
             ]
         }
-        result = await agent._handle_update_plan(session, "tc1", args)
+        await agent._handle_update_plan(session, "tc1", args)
         assert session.plan[0]["status"] == "pending"
         assert session.plan[0]["priority"] == "medium"
 
@@ -955,7 +955,7 @@ class TestPlanToolEdgeCases:
                 {"content": 12345, "status": "pending", "priority": "high"},
             ]
         }
-        result = await agent._handle_update_plan(session, "tc1", args)
+        await agent._handle_update_plan(session, "tc1", args)
         assert session.plan[0]["content"] == "12345"
 
     @pytest.mark.asyncio
@@ -1532,7 +1532,7 @@ class TestPromptEdgeCases:
         # This will try to call the API and fail, but we check that
         # the empty-content guard doesn't block it
         original_count = len(session.messages)
-        resp = await agent.prompt(
+        await agent.prompt(
             prompt=[{"type": "image", "data": img_b64, "mime_type": "image/png"}],
             session_id=session.id,
             message_id="msg-1",

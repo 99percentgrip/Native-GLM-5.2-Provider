@@ -330,7 +330,6 @@ class TestCompactionToolBoundary:
         await agent._maybe_compact(session, client, force=True)
 
         # Find what was passed to summarize_messages
-        summarized = client.summarize_messages.call_args[0][0]
         # The first kept message should NOT be a tool result
         kept = session.messages[2:]  # after system + summary
         assert kept[0].get("role") != "tool", (

@@ -1,6 +1,7 @@
 """pytest configuration — add asyncio support."""
-import pytest
 import asyncio
+
+import pytest
 
 
 @pytest.fixture
