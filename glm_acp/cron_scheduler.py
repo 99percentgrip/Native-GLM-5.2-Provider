@@ -12,7 +12,15 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
-from .cron import CLAIM_TTL_SECONDS, CronError, claim_due, cron_dir, finish_job, renew_claim
+from .cron import (
+    CLAIM_TTL_SECONDS,
+    CronError,
+    claim_due,
+    cron_dir,
+    ensure_dirs,
+    finish_job,
+    renew_claim,
+)
 from .memory import read_learned_skill, read_skill_bundle
 from .security import scan_promptware, wrap_untrusted_output
 
@@ -317,11 +325,22 @@ async def daemon(
         raise CronError("Daemon interval must be at least one second")
     stop = stop_event or asyncio.Event()
     loop = asyncio.get_running_loop()
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError, RuntimeError):
-            loop.add_signal_handler(signum, stop.set)
+    # Only own signal handlers when running standalone (foreground CLI). When
+    # embedded via agent.initialize(), the caller passes a stop_event and owns
+    # shutdown through aclose(); installing handlers here would swallow
+    # SIGTERM/SIGINT that are intended for the host process and prevent it
+    # from terminating (test_stdio_initialize_is_clean_jsonrpc regression).
+    own_signals = stop_event is None
+    if own_signals:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.add_signal_handler(signum, stop.set)
     try:
         while not stop.is_set():
+            # The heartbeat is the very first write on a fresh machine, so the
+            # cron directory must exist before the loop runs. tick() calls
+            # ensure_dirs() via _tick_lock(), but only after this write.
+            ensure_dirs()
             (cron_dir() / "daemon-heartbeat").write_text(
                 str(datetime_now_timestamp()), encoding="ascii"
             )
@@ -331,9 +350,10 @@ async def daemon(
             except asyncio.TimeoutError:
                 pass
     finally:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError, RuntimeError):
-                loop.remove_signal_handler(signum)
+        if own_signals:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(NotImplementedError, RuntimeError):
+                    loop.remove_signal_handler(signum)
 
 
 def datetime_now_timestamp() -> float:

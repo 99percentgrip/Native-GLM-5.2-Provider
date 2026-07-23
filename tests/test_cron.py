@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import multiprocessing
 import os
@@ -307,3 +308,37 @@ async def test_daemon_task_is_cancelled_cleanly(monkeypatch: pytest.MonkeyPatch)
     assert agent._cron_task is not None
     await agent.aclose()
     assert agent._cron_task is None
+
+
+@pytest.mark.asyncio
+async def test_daemon_writes_heartbeat_even_when_cron_dir_missing():
+    """Regression: daemon() must create cron_dir() before writing daemon-heartbeat.
+
+    Before the fix, the heartbeat write at the top of the daemon loop ran
+    before any ensure_dirs() call, so the very first daemon start on a fresh
+    machine raised FileNotFoundError and crashed the glm-acp-cron background
+    task.
+    """
+    import shutil
+
+    from glm_acp.cron import cron_dir
+    from glm_acp.cron_scheduler import daemon
+
+    # Simulate a fresh machine: no cron directory has ever been created.
+    if cron_dir().exists():
+        shutil.rmtree(cron_dir())
+    assert not cron_dir().exists()
+
+    stop = asyncio.Event()
+
+    async def stop_after_first_iteration() -> None:
+        # Let the first heartbeat write + tick run, then end the daemon.
+        await asyncio.sleep(0.1)
+        stop.set()
+
+    asyncio.create_task(stop_after_first_iteration())
+
+    # Must not raise FileNotFoundError on the first heartbeat write.
+    await daemon(interval=1.0, stop_event=stop)
+
+    assert (cron_dir() / "daemon-heartbeat").exists()
