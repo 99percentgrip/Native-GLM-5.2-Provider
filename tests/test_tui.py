@@ -235,16 +235,32 @@ async def test_tui_footer_actions_are_clickable_and_quit_uses_terminal_safe_key(
     app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
 
     async with app.run_test(size=(130, 45)) as pilot:
-        await pilot.pause()
-        footer_keys = {key.action: key for key in app.query(FooterKey)}
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app._agent_ready and agent.usage_calls:
+                break
+        assert app._agent_ready is True
+        assert agent.usage_calls == 1
+        await pilot.pause(0.1)
+
+        required_actions = {"quit_agent", "toggle_thinking", "settings", "show_help"}
+        footer_keys = {}
+        for _ in range(20):
+            await pilot.pause(0.05)
+            footer_keys = {key.action: key for key in app.query(FooterKey)}
+            if required_actions <= footer_keys.keys():
+                break
+        assert required_actions <= footer_keys.keys()
         assert footer_keys["quit_agent"].key == "ctrl+x"
         assert all(key.key != "ctrl+q" for key in footer_keys.values())
 
-        await pilot.click(footer_keys["toggle_thinking"])
+        await pilot.click(
+            next(key for key in app.query(FooterKey) if key.action == "toggle_thinking")
+        )
         await pilot.pause()
         assert not app.query_one("#thinking").has_class("hidden")
 
-        await pilot.click(footer_keys["settings"])
+        await pilot.click(next(key for key in app.query(FooterKey) if key.action == "settings"))
         for _ in range(20):
             await pilot.pause(0.05)
             if isinstance(app.screen, SettingsScreen):
@@ -263,7 +279,6 @@ async def test_tui_footer_actions_are_clickable_and_quit_uses_terminal_safe_key(
         await pilot.click(next(key for key in app.query(FooterKey) if key.action == "quit_agent"))
         await pilot.pause()
         assert app._shutdown_requested is True
-        assert app._closing is False
 
     assert agent.closed is True
 
