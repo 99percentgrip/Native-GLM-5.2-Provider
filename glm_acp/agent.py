@@ -4115,6 +4115,21 @@ class GlmAcpAgent(acp.Agent):
                 name="plugins",
                 description="List and verify installed hash-pinned declarative plugins",
             ),
+            AvailableCommand(
+                name="version",
+                description="Show the current project version",
+            ),
+            AvailableCommand(
+                name="release",
+                description=(
+                    "Cut a release: /release patch|minor|major — bumps version, "
+                    "verifies, commits, tags, pushes"
+                ),
+            ),
+            AvailableCommand(
+                name="ci",
+                description="Show recent CI run status via gh CLI",
+            ),
         ]
         update = update_available_commands(commands)
         await self._conn.session_update(session_id=session.id, update=update)
@@ -4934,6 +4949,23 @@ class GlmAcpAgent(acp.Agent):
                 "experimental branch."
             )
 
+        elif command == "/version":
+            from .release import version_info
+
+            return version_info(session.cwd)
+
+        elif command.startswith("/release"):
+            from .release import cut_release
+
+            parts = command.split(maxsplit=1)
+            release_type = parts[1].strip() if len(parts) > 1 else "patch"
+            return await cut_release(session.cwd, release_type)
+
+        elif command == "/ci":
+            from .release import ci_status
+
+            return await ci_status(session.cwd)
+
         else:
             return (
                 f"Unknown command: {command}\nAvailable commands: /compact, "
@@ -4942,6 +4974,7 @@ class GlmAcpAgent(acp.Agent):
                 "/skills, /profile, /curator, /sessions"
                 ", /lineage, /goal, /subgoal"
                 ", /checkpoint, /rollback, /plugins"
+                ", /version, /release, /ci"
             )
 
     # ------------------------------------------------------------------
