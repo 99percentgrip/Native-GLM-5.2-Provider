@@ -164,6 +164,22 @@ class HangingCloseAgent(FakeAgent):
         await asyncio.Event().wait()
 
 
+class SlowAgent(FakeAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompt_started = asyncio.Event()
+        self.prompt_release = asyncio.Event()
+
+    async def prompt(self, prompt, session_id, message_id=None, **kwargs):
+        self.prompts.append(prompt)
+        self.prompt_started.set()
+        await self.prompt_release.wait()
+        await self.conn.session_update(
+            session_id,
+            acp.update_agent_message_text("Finished."),
+        )
+
+
 def _args(tmp_path, *extra):
     return build_parser().parse_args(
         ["chat", "--cwd", str(tmp_path), "--permission", "ask", *extra]
@@ -200,6 +216,69 @@ async def test_tui_mounts_full_screen_panels_and_toggles_thinking(tmp_path):
         app.exit(0)
 
     assert agent.closed is True
+
+
+@pytest.mark.asyncio
+async def test_tui_activity_line_animates_runtime_states_and_returns_ready(tmp_path):
+    agent = SlowAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        activity = app.query_one("#activity-status", Static)
+        assert "Ready" in str(activity.render())
+
+        composer = app.query_one("#composer", Input)
+        composer.value = "Inspect the repository"
+        await pilot.press("enter")
+        await asyncio.wait_for(agent.prompt_started.wait(), timeout=1)
+        assert "Thinking" in str(activity.render())
+        initial_frame = app._activity_frame
+        app._advance_activity_animation()
+        assert app._activity_frame != initial_frame
+
+        await app.handle_session_update(acp.update_agent_thought_text("Considering evidence"))
+        assert "Reasoning" in str(activity.render())
+
+        await app.handle_session_update(
+            acp.start_tool_call(
+                "tool-animated",
+                "Search\nrepository for a deliberately very long bounded tool title",
+                kind="search",
+                status="pending",
+            )
+        )
+        rendered = str(activity.render())
+        assert "Working · Search repository" in rendered
+        assert "\n" not in rendered
+
+        agent.prompt_release.set()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app._prompt_worker is None:
+                break
+        assert app._prompt_worker is None
+        assert "Completed" in str(activity.render())
+
+        app._activity_hold_until = time.monotonic() - 1
+        app._advance_activity_animation()
+        assert "Ready" in str(activity.render())
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_activity_animation_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("GLM_ACP_TUI_ANIMATION", "off")
+    app = NativeGlmTui(_args(tmp_path), agent_factory=FakeAgent)
+
+    async with app.run_test(size=(100, 35)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        app._set_activity("Thinking", active=True)
+        initial_frame = app._activity_frame
+        app._advance_activity_animation()
+        assert app._activity_frame == initial_frame
+        assert "◆ Thinking" in str(app.query_one("#activity-status", Static).render())
+        app.exit(0)
 
 
 @pytest.mark.asyncio
@@ -574,6 +653,7 @@ async def test_tui_permission_modal_is_redacted_and_returns_allow(tmp_path):
             if isinstance(app.screen, PermissionScreen):
                 break
         assert isinstance(app.screen, PermissionScreen)
+        assert "Waiting for approval" in str(app.query_one("#activity-status", Static).render())
         detail = str(app.screen.query_one("#permission-detail", Static).render())
         assert "must-never-render" not in detail
         assert "[REDACTED]" in detail

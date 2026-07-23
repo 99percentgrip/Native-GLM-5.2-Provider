@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
@@ -18,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import (
     Button,
     Footer,
@@ -343,7 +346,15 @@ class TuiClient:
             or "requested tool"
         )
         detail = TerminalClient._permission_detail(getattr(tool_call, "raw_input", None))
-        allowed = await self.app.push_screen_wait(PermissionScreen(str(title), detail))
+        self.app._set_activity("Waiting for approval", tone="warning")
+        try:
+            allowed = await self.app.push_screen_wait(PermissionScreen(str(title), detail))
+        finally:
+            if self.app._prompt_worker is not None:
+                self.app._set_activity(
+                    f"Working · {self.app._bounded_activity_label(str(title))}",
+                    active=True,
+                )
         allow = next((option for option in options if option.option_id == "allow"), None)
         if allowed and allow is not None:
             return RequestPermissionResponse(
@@ -361,6 +372,9 @@ class TuiClient:
 class NativeGlmTui(App[int]):
     """Full-screen coding-agent interface backed by one ``GlmAcpAgent``."""
 
+    ACTIVITY_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    ACTIVITY_INTERVAL_SECONDS = 0.12
+    ACTIVITY_HOLD_SECONDS = 1.6
     TITLE = "Native GLM ACP"
     SUB_TITLE = "Full harness terminal"
     ENABLE_COMMAND_PALETTE = False
@@ -412,6 +426,10 @@ class NativeGlmTui(App[int]):
         background: #0b1017;
     }
     #command-hint.visible { display: block; }
+    #activity-status {
+        height: 1; margin: 0 2; color: #85c8ff;
+        background: #0b1017;
+    }
     #composer {
         dock: bottom; height: 3; margin: 0 1; border: tall #2589d8;
         background: #111a24;
@@ -452,6 +470,20 @@ class NativeGlmTui(App[int]):
         self._command_values: list[str] = []
         self._provider_usage: PlanUsage | None = None
         self._provider_usage_error = ""
+        animation_setting = os.environ.get("GLM_ACP_TUI_ANIMATION", "1")
+        self._activity_animation_enabled = animation_setting.strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        self._activity_timer: Timer | None = None
+        self._activity_frame = 0
+        self._activity_label = "Starting session"
+        self._activity_tone = "active"
+        self._activity_active = False
+        self._activity_started = time.monotonic()
+        self._activity_hold_until: float | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -475,6 +507,7 @@ class NativeGlmTui(App[int]):
             id="command-hint",
             markup=False,
         )
+        yield Static("◌ Starting session", id="activity-status", markup=False)
         yield CommandInput(
             placeholder="Ask Native GLM ACP… (/help for commands)",
             id="composer",
@@ -489,6 +522,13 @@ class NativeGlmTui(App[int]):
         self.query_one("#tools").border_title = "Activity"
         self.query_one("#command-menu").border_title = "Commands"
         self.query_one("#tools", RichLog).write("[dim]Waiting for tool activity…[/dim]")
+        self._activity_timer = self.set_interval(
+            self.ACTIVITY_INTERVAL_SECONDS,
+            self._advance_activity_animation,
+            name="tui-activity-animation",
+            pause=True,
+        )
+        self._set_activity("Starting session", active=True)
         self.agent.on_connect(self.client)
         self.initialize_agent()
 
@@ -518,11 +558,13 @@ class NativeGlmTui(App[int]):
             self.query_one("#composer", Input).disabled = False
             self.query_one("#composer", Input).focus()
             self._refresh_session_panel("Ready")
+            self._set_activity("Ready", tone="ready")
             await self._append_welcome()
             self.refresh_provider_usage(silent=True)
         except Exception as error:
             await self._append_system(f"Startup failed: {error}")
             self._refresh_session_panel("Startup failed")
+            self._set_activity("Startup failed", tone="error")
 
     @on(Input.Submitted, "#composer")
     async def submit_input(self, event: Input.Submitted) -> None:
@@ -553,6 +595,7 @@ class NativeGlmTui(App[int]):
         self.query_one("#thinking", RichLog).clear()
         event.input.disabled = True
         self._refresh_session_panel("Running")
+        self._set_activity("Thinking", active=True)
         self._prompt_worker = self.run_prompt(text, list(self._pending_images))
         self._pending_images.clear()
 
@@ -816,6 +859,7 @@ class NativeGlmTui(App[int]):
     async def run_prompt(self, text: str, images: list[str]) -> None:
         from .terminal_cli import _prompt_blocks
 
+        outcome = "completed"
         try:
             await self.agent.prompt(
                 prompt=_prompt_blocks(text, images),
@@ -823,9 +867,11 @@ class NativeGlmTui(App[int]):
                 message_id=str(uuid4()),
             )
         except asyncio.CancelledError:
+            outcome = "cancelled"
             await self._append_system("Turn cancelled.")
             raise
         except Exception as error:
+            outcome = "failed"
             await self._append_system(f"Turn failed: {error}")
         finally:
             self._prompt_worker = None
@@ -834,6 +880,24 @@ class NativeGlmTui(App[int]):
                 composer.disabled = False
                 composer.focus()
                 self._refresh_session_panel("Ready")
+                if outcome == "completed":
+                    self._set_activity(
+                        "Completed",
+                        tone="success",
+                        hold=self.ACTIVITY_HOLD_SECONDS,
+                    )
+                elif outcome == "cancelled":
+                    self._set_activity(
+                        "Cancelled",
+                        tone="warning",
+                        hold=self.ACTIVITY_HOLD_SECONDS,
+                    )
+                else:
+                    self._set_activity(
+                        "Turn failed",
+                        tone="error",
+                        hold=self.ACTIVITY_HOLD_SECONDS,
+                    )
 
     @work(exclusive=True, group="provider-usage", exit_on_error=False)
     async def refresh_provider_usage(self, *, silent: bool) -> None:
@@ -904,10 +968,14 @@ class NativeGlmTui(App[int]):
                 if name != "/":
                     self._slash_commands[name] = description
         elif kind == "agent_message_chunk":
+            if self._prompt_worker is not None:
+                self._set_activity("Responding", active=True)
             await self._append_agent(self._content_text(update))
         elif kind == "user_message_chunk" and self._replaying:
             await self._append_user(self._content_text(update), history=True)
         elif kind == "agent_thought_chunk":
+            if self._prompt_worker is not None:
+                self._set_activity("Reasoning", active=True)
             text = self._content_text(update)
             self._thinking_text += text
             self.query_one("#thinking", RichLog).write(text, scroll_end=True)
@@ -917,6 +985,11 @@ class NativeGlmTui(App[int]):
             title = getattr(update, "title", None) or self.client._tool_titles.get(tool_call_id)
             status = getattr(update, "status", None)
             if title:
+                if self._prompt_worker is not None:
+                    self._set_activity(
+                        f"Working · {self._bounded_activity_label(str(title))}",
+                        active=True,
+                    )
                 self.query_one("#tools", RichLog).write(
                     f"[bold]{escape(str(title))}[/bold] · {escape(str(status or 'tool'))}",
                     scroll_end=True,
@@ -1017,10 +1090,88 @@ class NativeGlmTui(App[int]):
                 windows.append(f"MCP {quota.percentage:g}%")
         return "quota " + (" · ".join(windows) if windows else "reported · /usage")
 
+    @staticmethod
+    def _bounded_activity_label(label: str, limit: int = 56) -> str:
+        """Keep streamed tool titles to one bounded terminal line."""
+        normalized = " ".join(label.split())
+        return normalized if len(normalized) <= limit else normalized[: limit - 1].rstrip() + "…"
+
+    def _set_activity(
+        self,
+        label: str,
+        *,
+        active: bool = False,
+        tone: str = "active",
+        hold: float | None = None,
+    ) -> None:
+        """Set presentation-only activity without becoming session truth."""
+        bounded_label = self._bounded_activity_label(label)
+        if (
+            hold is None
+            and self._activity_hold_until is None
+            and bounded_label == self._activity_label
+            and tone == self._activity_tone
+            and active == self._activity_active
+        ):
+            return
+        self._activity_label = bounded_label
+        self._activity_tone = tone
+        self._activity_active = active
+        self._activity_frame = 0
+        self._activity_started = time.monotonic()
+        self._activity_hold_until = (
+            self._activity_started + hold if hold is not None and hold > 0 else None
+        )
+        self._render_activity()
+        if self._activity_timer is not None:
+            if (active and self._activity_animation_enabled) or self._activity_hold_until:
+                self._activity_timer.resume()
+            else:
+                self._activity_timer.pause()
+
+    def _advance_activity_animation(self) -> None:
+        if self._activity_hold_until is not None and time.monotonic() >= self._activity_hold_until:
+            self._set_activity("Ready", tone="ready")
+            return
+        if self._activity_active and self._activity_animation_enabled:
+            self._activity_frame = (self._activity_frame + 1) % len(self.ACTIVITY_FRAMES)
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        widget = self.query_one("#activity-status", Static)
+        styles = {
+            "active": "bold #85c8ff",
+            "success": "bold #68d391",
+            "warning": "bold #f6c85f",
+            "error": "bold #ff7b72",
+            "ready": "#7f96ab",
+        }
+        symbols = {
+            "success": "✓",
+            "warning": "○",
+            "error": "!",
+            "ready": "●",
+        }
+        if self._activity_active:
+            symbol = (
+                self.ACTIVITY_FRAMES[self._activity_frame]
+                if self._activity_animation_enabled
+                else "◆"
+            )
+        else:
+            symbol = symbols.get(self._activity_tone, "•")
+        rendered = Text()
+        rendered.append(f"{symbol} {self._activity_label}", style=styles[self._activity_tone])
+        if self._activity_active and self._activity_animation_enabled:
+            elapsed = max(0.0, time.monotonic() - self._activity_started)
+            rendered.append(f"  {elapsed:.1f}s", style="dim #7f96ab")
+        widget.update(rendered)
+
     async def action_cancel_turn(self) -> None:
         if self._prompt_worker is None:
             self.notify("No active turn", severity="information")
             return
+        self._set_activity("Cancelling", active=True, tone="warning")
         await self.agent.cancel(session_id=self.session_id)
         self._prompt_worker.cancel()
 

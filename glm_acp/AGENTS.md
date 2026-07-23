@@ -543,6 +543,14 @@ model. The empty-state layout keeps reasoning collapsed and uses compact status,
 activity, and plan surfaces. TUI state is presentation-only and must never
 become an alternate source of session truth or stored reasoning.
 
+The composer-adjacent activity line derives only from existing TUI lifecycle
+and ACP session updates. It animates startup, thinking, reasoning, tool work,
+and cancellation with a single paused-when-idle timer; approval, completion,
+failure, cancellation, and ready states are static, and terminal labels remain
+single-line and bounded. `GLM_ACP_TUI_ANIMATION=0` (also `false`, `no`, or `off`)
+must disable frame motion while preserving state text. This surface must not
+change shared-agent behavior or appear in plain and JSON automation modes.
+
 The visible Footer quit binding is Ctrl-X because Ctrl-Q may be consumed by
 POSIX XON/XOFF flow control; F10 and `/exit` are equivalent, and Ctrl-Q remains
 hidden compatibility only. Footer entries must stay pointer-actionable.
