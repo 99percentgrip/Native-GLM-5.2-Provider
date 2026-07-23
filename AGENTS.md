@@ -89,6 +89,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - Awareness remains bounded and inspectable: typed epistemic records cite only harness-issued metadata evidence; relevant edits invalidate support; active contradictions and unsupported criteria block persistent-goal completion before the auxiliary judge; no chain-of-thought is stored.
 - Metacognitive control remains deterministic and advisory: uncertainty classes and execution modes derive from inspectable runtime facts; aggregate capability profiles are metadata-only and profile-isolated; empirical history may raise assurance but never expand permissions, authorize workers, change trusted policy, or store reasoning.
 - Grounded deliberation remains evidence-only and bounded: an isolated thinking-disabled critic receives only objectives, a credential-redacted diff, fresh harness evidence, hypothesis outcomes, and completion metadata; ambiguous diagnosis uses two or three falsifiable alternatives with fresh evidence-backed tests; value-of-information ranking is advisory and cannot bypass permissions or policy.
+- Repository intelligence remains lazy and metadata-bounded: it never snapshots source bodies, direct small tasks incur no world-model overhead, pre-edit impact predictions freeze at mutation, high-risk pre-mortems are inspectable, and observed impact never substitutes for fresh verification.
+- Safe metacognitive learning remains causal, inert by default, and evaluation-gated: fixed strategy drafts require two evidence-backed attributions, explicit promotion, gains on fresh time-split and transformed cases, and no quality, safety, calibration, latency, token, or small-task-overthinking regression; promotion never changes trusted authority.
 - Advanced execution remains declarative and fail-closed: checkpoints are conflict-aware, secret-safe, and profile-configurable within hard bounds; context references are bounded and language-ranked; policy rules inspect nested workflow steps; worker promotion is verification- and digest-gated with transactional rollback; profiles isolate user state; plugin packages are permission-scoped, data-only, hash-pinned, and optionally require trusted Ed25519 publishers.
 - Quality evidence remains private and reproducible: failure drafts contain metadata only until explicitly promoted into outcome-based cases; local observability never stores bodies or raw identities; fuzzing and fault injection run offline and deterministically.
 
@@ -104,8 +106,8 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 
 ## Current Project Status
 
-- Package and ACP implementation version is `1.6.2` from `glm_acp.__version__`.
-- GitHub release `v1.6.2` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
+- Package and ACP implementation version is `1.7.0` from `glm_acp.__version__`.
+- GitHub release `v1.7.0` publishes the five supported frozen binaries, checksums, provenance attestations, Python distributions, Registry metadata, the icon, checksum-verifying Unix and Windows installers, and safe one-command uninstall support.
 - ACP Registry publication is tracked in `agentclientprotocol/registry#439` and remains pending until Registry maintainers merge it.
 - Source installs, the `glm-acp` console script, module execution, and frozen binaries share `cli.main()`.
 - Public frozen binaries support one-command removal of installer-owned commands, PATH markers, and matching custom Zed configuration with an automatic settings backup.
@@ -125,6 +127,8 @@ Native GLM ACP is an open-source ACP-native coding agent runtime for Z.ai GLM mo
 - A typed epistemic ledger tracks observations, assumptions, hypotheses, contradictions, unknowns, and capability limits with provenance and scope-aware freshness. `/awareness` shows the state and completion certificate; metadata-only observability reports evidence coverage and prevented unsupported completions.
 - A bounded metacognitive controller separates ambiguity, knowledge, diagnostic, capability, verification, and permission uncertainty; selects direct, grounded, deliberate, or high-assurance posture; and uses redacted outcome aggregates by task family and coarse environment to escalate weak historical cases without overthinking trivial work.
 - Deliberate diagnosis generates two or three falsifiable hypotheses and tracks tests against fresh evidence IDs; a separately prompted auxiliary critic reviews only goals, bounded redacted diffs, fresh evidence, and completion metadata, while deterministic value-of-information ranking prioritizes the cheapest reliable allowed evidence action.
+- Lazy repository intelligence combines bounded LSP/tool paths, imports, tests, manifests, instructions, CODEOWNERS, current changes, and project-matched failure classes; it predicts files/checks/packaging/platforms before edits, compares observed impact afterward, and adds deterministic pre-mortems only for high-risk work.
+- Safe metacognitive learning attributes corrected failures to fixed cause/intervention classes and drafts allowlisted strategies without activating them; `meta-cases` and `meta-eval` enforce overall, fresh, transformed, per-case, safety, calibration, evidence, latency, token, and restraint gates before explicit promotion.
 - Repeated identical tool batches, repeated failures, and unchanged read-only results are interrupted before the 50-iteration ceiling; unchanged reads are deduplicated, malformed JSON arguments receive corrective feedback, and shell tools do not inherit common credential environment variables.
 - Installed language servers provide read-only semantic navigation, transactional hash-pinned multi-file patches commit all-or-nothing, and bounded batch reads reduce tool round trips without arbitrary code execution.
 - Stable managed-prompt prefixes expose cache-hit ratios; metadata-only redacted trajectories and hash-pinned lifecycle hooks add evidence and policy without storing prompts, outputs, commands, reasoning, credentials, or raw session IDs.
@@ -162,7 +166,7 @@ Verify the install:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: editable glm_acp metadata and glm_acp-1.6.2.dist-info
+# expect: editable glm_acp metadata and glm_acp-1.7.0.dist-info
 ```
 
 ## Verification

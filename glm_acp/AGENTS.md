@@ -23,6 +23,8 @@ streaming, 1M context, and auto-continuation for long generations.
 - **Awareness and completion evidence**: `awareness.py` — bounded typed epistemic records, harness-issued evidence references, scope-aware invalidation, and completion certificates
 - **Metacognitive control**: `metacognition.py` — typed uncertainty classification, deterministic adaptive execution modes, and telemetry-derived aggregate capability profiles
 - **Grounded deliberation**: `deliberation.py` — evidence-only criticism, falsifiable hypothesis testing, and deterministic value-of-information action ranking
+- **Repository intelligence**: `repository_intelligence.py` — bounded lazy dependency/test/ownership world slices, pre-edit impact prediction, observed comparison, and risk-triggered pre-mortems
+- **Safe metacognitive learning**: `meta_learning.py` — typed causal attribution, inert strategy drafts, and explicit fresh/time-split/mutated evaluation-gated promotion
 - **Post-write diagnostics**: `diagnostics.py` — deterministic syntax checks and lazy optional LSP clients
 - **Lifecycle extensions**: `hooks.py` — user-owned, hash-pinned, workspace-scoped lifecycle commands
 - **Trajectory evidence**: `telemetry.py` and `observability.py` — bounded metadata-only events plus local aggregate quality, latency, cache, tool, and safety reporting
@@ -155,6 +157,20 @@ previous compaction produces a warning.
 - Structural verification guards run before the critic. An auxiliary approval must cite fresh evidence; relevant edits invalidate the verdict. Critic output is advisory loop guidance and never authorizes tools, workers, policy changes, or completion by itself.
 - Value-of-information ranking scores only available/virtual actions by expected information gain, reliability, and cost. Direct tasks receive no ranking; Read Only never recommends command execution; permissions and policy still evaluate the selected action normally.
 - `/deliberation` exposes hypothesis/test state, ranked actions, and the latest critic verdict. Telemetry records only counts, enums, tool names, scores, and match outcomes—never objectives, hypotheses, diffs, evidence bodies, paths, or reasoning.
+
+### Repository intelligence
+
+- Non-trivial tasks build a lazy bounded slice of at most 96 path nodes and 192 relationships from current targets/changes, manifests, progressive instructions, nearby tests, statically resolved imports, semantic-tool paths, CODEOWNERS, and project-matched failure classes.
+- Repository intelligence never snapshots the checkout or persists source bodies. Repeated prompt refreshes reuse the unchanged slice; direct small tasks receive no world-model or pre-mortem context.
+- Impact predictions are updated while evidence gathering remains in the pre-edit generation, then freeze across the first mutation. Observed paths and canonical checks are compared afterward, and unexpected impact remains inspectable through `/repository`.
+- Counterfactual pre-mortems are deterministic, limited to five observable failure/detection pairs, and appear only for risk score 6 or higher. Predictions and pre-mortems are advisory and never establish coverage, expand permissions, or replace fresh verification.
+
+### Safe metacognitive learning
+
+- Causal attribution stores only fixed cause/intervention enums, tool class, harness evidence IDs, correction state, and edit generation. It stores no task text, output body, command, path, identity, credential, or private reasoning.
+- Corrected failures may draft only allowlisted strategies for clarification, browsing, LSP navigation, hypothesis branching, verification, or safe stopping. Drafts are inert and cannot alter execution.
+- Promotion requires two distinct supporting causal attributions, an explicit command, and a compatible passing baseline/candidate gate. The gate requires gains overall and on both fresh time-split and transformed cases, zero per-case/safety regression, improved false-completion and unsupported-claim counts when present, and no material calibration, clarification, evidence-freshness, contradiction, repetition, latency, token, or small-task-overthinking regression.
+- `glm-acp meta-cases`, `glm-acp meta-eval`, `/meta-learning`, and `/repository` are inspectable surfaces. Promoted strategies remain advisory and cannot change trusted policy, permissions, sandboxing, plugin trust, or delegation authority.
 
 ### Auxiliary routing and delegation
 

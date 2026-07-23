@@ -69,6 +69,15 @@ def observability_snapshot(
     hypothesis_sets = [event for event in events if event.get("event") == "hypothesis_set"]
     hypothesis_tests = [event for event in events if event.get("event") == "hypothesis_test"]
     voi = [event for event in events if event.get("event") == "voi_selection"]
+    repository_predictions = [
+        event for event in events if event.get("event") == "repository_prediction"
+    ]
+    repository_impacts = [event for event in events if event.get("event") == "repository_impact"]
+    attributions = [event for event in events if event.get("event") == "causal_attribution"]
+    meta_evaluations = [
+        event for event in events if event.get("event") == "metacognitive_evaluation"
+    ]
+    meta_candidates = [event for event in events if event.get("event") == "metacognitive_candidate"]
     durations = [_safe_int(event.get("duration_ms")) for event in tools]
     llm_durations = [_safe_int(event.get("duration_ms")) for event in llm]
     tool_counts = Counter(str(event.get("tool", "unknown")) for event in tools)
@@ -148,6 +157,31 @@ def observability_snapshot(
                 4,
             ),
         },
+        "repository_intelligence": {
+            "predictions": len(repository_predictions),
+            "pre_mortems": sum(
+                _safe_int(event.get("premortem_items")) for event in repository_predictions
+            ),
+            "comparisons": sum(bool(event.get("compared")) for event in repository_impacts),
+            "observed_files": sum(
+                _safe_int(event.get("observed_files")) for event in repository_impacts
+            ),
+            "unexpected_files": sum(
+                _safe_int(event.get("unexpected_files")) for event in repository_impacts
+            ),
+            "observed_checks": sum(
+                _safe_int(event.get("observed_checks")) for event in repository_impacts
+            ),
+        },
+        "safe_meta_learning": {
+            "causal_attributions": len(attributions),
+            "corrected": sum(bool(event.get("corrected")) for event in attributions),
+            "evaluations": len(meta_evaluations),
+            "evaluations_passed": sum(bool(event.get("passed")) for event in meta_evaluations),
+            "fresh_gain": sum(_safe_int(event.get("fresh_gain")) for event in meta_evaluations),
+            "mutated_gain": sum(_safe_int(event.get("mutated_gain")) for event in meta_evaluations),
+            "promotions": sum(event.get("status") == "promoted" for event in meta_candidates),
+        },
         "llm": {
             "calls": len(llm),
             "input_tokens": input_tokens,
@@ -192,6 +226,8 @@ def render_observability(snapshot: dict[str, Any]) -> str:
     awareness = snapshot["awareness"]
     metacognition = snapshot["metacognition"]
     deliberation = snapshot["grounded_deliberation"]
+    repository = snapshot["repository_intelligence"]
+    meta_learning = snapshot["safe_meta_learning"]
     by_tool = (
         "\n".join(
             f"- `{item['tool']}`: {item['calls']} calls, {item['failures']} failures"
@@ -225,5 +261,12 @@ def render_observability(snapshot: dict[str, Any]) -> str:
         f"{deliberation['hypotheses_tested']}/"
         f"{deliberation['hypotheses_generated']} hypotheses tested · "
         f"{deliberation['voi_match_rate']:.1%} VOI match\n\n"
+        f"- Repository intelligence: {repository['predictions']} predictions · "
+        f"{repository['comparisons']} observed comparisons · "
+        f"{repository['unexpected_files']} unexpected files · "
+        f"{repository['pre_mortems']} pre-mortem risks\n"
+        f"- Safe metacognitive learning: {meta_learning['causal_attributions']} attributions · "
+        f"{meta_learning['evaluations_passed']}/{meta_learning['evaluations']} gates passed · "
+        f"{meta_learning['promotions']} explicit promotions\n\n"
         "**Most-used tools**\n" + by_tool
     )

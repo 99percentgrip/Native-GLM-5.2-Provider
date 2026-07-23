@@ -25,6 +25,7 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - `test_awareness.py` covers typed epistemic state, provenance validation, secret/promptware rejection, scope-aware staleness, contradiction resolution, completion certificates, `/awareness`, judge gating, and awareness observability.
 - `test_metacognition.py` covers uncertainty separation, risk/mode selection, small-task restraint, empirical escalation, telemetry opt-out, profile corruption/promptware rejection, persistence, commands, and observability.
 - `test_deliberation.py` covers evidence-only critic isolation, bounded falsifiable hypotheses, fresh test evidence, stale invalidation, value-of-information ranking, diff redaction, persistence, commands, and metadata-only observability.
+- `test_repository_intelligence.py` covers lazy bounded world slices, imports/tests/instructions/ownership/failure metadata, prediction comparison, high-risk pre-mortems, small-task restraint, causal strategy drafts, explicit promotion, fresh/mutated evaluation gates, CLI surfaces, persistence, and metadata-only observability.
 
 ## Local Contracts
 
@@ -54,6 +55,8 @@ Own offline verification for ACP behavior, tools, persistence, packaging, authen
 - Awareness tests must prove unsupported evidence/criteria fail closed, relevant edits stale support without invalidating user evidence, every criterion and fresh post-edit verification gates persistent completion, active contradictions block completion, external bodies are excluded, and incomplete certificates bypass the auxiliary judge.
 - Metacognition tests must prove every uncertainty category remains distinct, unverified edits and release operations select high assurance, trivial tasks remain direct, weak profiles only escalate after enough outcomes, corrupt/malicious metadata is ignored, telemetry opt-out disables profiles, and no task text or path enters outcome events.
 - Deliberation tests must prove direct tasks add no overhead, diagnosis uses two or three distinct predictions/falsifiers, test results cite fresh non-user evidence, stale support resets tests and critic approval, approval cites known evidence, critic packets exclude primary reasoning, diff secrets are redacted, Read Only excludes command recommendations, and telemetry stores metadata only.
+- Repository-intelligence tests must prove source bodies never enter persisted state, traversal and context stay bounded, direct trivial tasks add no model overhead, predictions freeze before mutation and compare with observed files/checks, ownership and failure history remain metadata-only, and pre-mortems are risk-triggered.
+- Safe metacognitive-learning tests must prove attribution is typed and evidence-bounded, drafts cannot self-promote, promotion requires two supports plus explicit fresh/transformed improvement, safety and cost regressions fail closed, all eleven adversarial cases have mutations, and observability excludes task/tool bodies.
 
 ## Work Guidance
 

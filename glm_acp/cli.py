@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from . import __version__
 from .agent import run
@@ -72,6 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     harden.add_argument("--iterations", type=int, default=250)
     harden.add_argument("--seed", type=int, default=5202)
     harden.add_argument("--json", action="store_true", dest="as_json")
+    meta_eval = subparsers.add_parser(
+        "meta-eval", help="gate a metacognitive candidate on fresh and transformed cases"
+    )
+    meta_eval.add_argument("baseline")
+    meta_eval.add_argument("candidate")
+    meta_cases = subparsers.add_parser(
+        "meta-cases", help="print the built-in fresh and transformed evaluation case catalog"
+    )
+    meta_cases.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -107,6 +117,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"promotion rollback fault={result['checks']['promotion_rollback_fault']}."
             )
         return 0 if result["passed"] else 1
+    if args.command == "meta-cases":
+        from .meta_learning import built_in_evaluation_cases
+
+        cases = built_in_evaluation_cases()
+        if args.as_json:
+            print(json.dumps({"schema": 1, "cases": cases}, ensure_ascii=False, indent=2))
+        else:
+            for case in cases:
+                suffix = f" (mutation of {case['mutation_of']})" if case.get("mutation_of") else ""
+                print(f"{case['id']} [{case['split']}]{suffix}")
+        return 0
+    if args.command == "meta-eval":
+        from .meta_learning import evaluate_metacognitive_reports
+
+        reports = []
+        try:
+            for value in (args.baseline, args.candidate):
+                path = Path(value)
+                if path.stat().st_size > 2 * 1024 * 1024:
+                    raise ValueError(f"{path} exceeds 2 MiB")
+                report = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(report, dict):
+                    raise ValueError(f"{path} must contain a JSON object")
+                reports.append(report)
+            gate = evaluate_metacognitive_reports(reports[0], reports[1])
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"Metacognitive evaluation failed closed: {error}")
+            return 2
+        print(json.dumps(gate.to_dict(), ensure_ascii=False, indent=2))
+        return 0 if gate.passed else 1
     if args.setup:
         return configure_credentials()
     if args.check_auth:

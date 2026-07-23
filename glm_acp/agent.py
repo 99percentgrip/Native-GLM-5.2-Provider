@@ -107,11 +107,13 @@ from .memory import (
     skill_curator_status,
     user_knowledge,
 )
+from .meta_learning import SafeMetacognitiveLearning
 from .metacognition import CapabilityProfiles, MetacognitiveController
 from .policy import PolicyEngine
 from .profiles import active_profile
 from .project_context import detect_project_facts, instruction_files
 from .references import expand_references
+from .repository_intelligence import RepositoryIntelligence
 from .security import safe_context_text, wrap_untrusted_output
 from .session_store import SessionStore, session_persistence_enabled
 from .telemetry import TrajectoryRecorder
@@ -320,6 +322,8 @@ class Session:
         self.awareness = EpistemicLedger()
         self.metacognition = MetacognitiveController()
         self.deliberation = GroundedDeliberation()
+        self.repository_intelligence = RepositoryIntelligence()
+        self.meta_learning = SafeMetacognitiveLearning()
         self.goal: str = ""
         self.subgoals: list[str] = []
         self.goal_paused = False
@@ -367,9 +371,10 @@ class Session:
                 "\n\nManaged epistemic state (metadata only; record updates must cite listed "
                 "evidence IDs):\n" + awareness
             )
+        facts = detect_project_facts(self.cwd)
         assessment = self.metacognition.assess(
             task=self.goal or self.task_context,
-            facts=detect_project_facts(self.cwd),
+            facts=facts,
             ledger=self.awareness,
             permission_mode=self.permission_mode,
             session_mode=self.mode,
@@ -397,6 +402,38 @@ class Session:
             content += (
                 "\n\nManaged grounded deliberation (bounded conclusions and evidence IDs; "
                 "never private reasoning):\n" + self.deliberation.model_context()
+            )
+        repository_task = self.goal or self.task_context
+        needs_repository_refresh = self.repository_intelligence.needs_prepare(
+            repository_task,
+            self.instruction_targets,
+            self.verification.changed_paths,
+            self.verification.edit_generation,
+        )
+        self.repository_intelligence.prepare(
+            task=repository_task,
+            facts=facts,
+            targets=self.instruction_targets,
+            changed_paths=self.verification.changed_paths,
+            assessment=assessment,
+            edit_generation=self.verification.edit_generation,
+            failure_drafts=(
+                FailureCorpus().project_metadata(self.cwd)
+                if needs_repository_refresh and assessment.execution_mode != "direct"
+                else ()
+            ),
+        )
+        repository_context = self.repository_intelligence.model_context()
+        if repository_context:
+            content += (
+                "\n\nManaged lazy repository intelligence (bounded metadata and advisory "
+                "impact prediction):\n" + repository_context
+            )
+        learning_context = self.meta_learning.model_context()
+        if learning_context:
+            content += (
+                "\n\nExplicitly promoted metacognitive strategies (evaluation-gated and "
+                "advisory only):\n" + learning_context
             )
         prompt = {"role": "system", "content": content}
         if self.messages and self.messages[0].get("role") == "system":
@@ -450,6 +487,8 @@ class Session:
             "awareness": self.awareness.to_dict(),
             "metacognition": self.metacognition.to_dict(),
             "deliberation": self.deliberation.to_dict(),
+            "repository_intelligence": self.repository_intelligence.to_dict(),
+            "meta_learning": self.meta_learning.to_dict(),
             "goal": self.goal,
             "subgoals": self.subgoals,
             "goal_paused": self.goal_paused,
@@ -505,6 +544,10 @@ class Session:
         session.awareness = EpistemicLedger(data.get("awareness"))
         session.metacognition = MetacognitiveController(data.get("metacognition"))
         session.deliberation = GroundedDeliberation(data.get("deliberation"))
+        session.repository_intelligence = RepositoryIntelligence(
+            data.get("repository_intelligence")
+        )
+        session.meta_learning = SafeMetacognitiveLearning(data.get("meta_learning"))
         session.goal = str(data.get("goal", ""))[:4000]
         session.subgoals = [
             str(value)[:1000] for value in data.get("subgoals", []) if isinstance(value, str)
@@ -1516,6 +1559,10 @@ class GlmAcpAgent(acp.Agent):
         new_session.awareness = EpistemicLedger(parent.awareness.to_dict())
         new_session.metacognition = MetacognitiveController(parent.metacognition.to_dict())
         new_session.deliberation = GroundedDeliberation(parent.deliberation.to_dict())
+        new_session.repository_intelligence = RepositoryIntelligence(
+            parent.repository_intelligence.to_dict()
+        )
+        new_session.meta_learning = SafeMetacognitiveLearning(parent.meta_learning.to_dict())
         new_session.goal = parent.goal
         new_session.subgoals = list(parent.subgoals)
         new_session.goal_paused = parent.goal_paused
@@ -1795,12 +1842,42 @@ class GlmAcpAgent(acp.Agent):
         text_only = self._extract_text(prompt)
         if not session.goal:
             session.awareness.set_objective(text_only)
-        session.awareness.note_evidence(
+        user_evidence = session.awareness.note_evidence(
             "user",
             "Current user request received",
             session.verification.edit_generation,
         )
+        pending = session.meta_learning.pending_failure
+        if pending and pending.get("cause") == "requirement_ambiguity":
+            attribution = session.meta_learning.observe(
+                tool="ask_user",
+                success=True,
+                output="",
+                evidence_ids=[user_evidence.id],
+                edit_generation=session.verification.edit_generation,
+            )
+            if attribution is not None:
+                self._telemetry.record(
+                    "causal_attribution",
+                    session.id,
+                    cause=attribution.cause,
+                    intervention=attribution.intervention,
+                    corrected=attribution.corrected,
+                    evidence_count=len(attribution.evidence_ids),
+                )
         session.refresh_system_prompt(text_only)
+        prediction = session.repository_intelligence.prediction
+        self._telemetry.record(
+            "repository_prediction",
+            session.id,
+            node_count=len(session.repository_intelligence.nodes),
+            edge_count=len(session.repository_intelligence.edges),
+            predicted_files=len(prediction.files) if prediction else 0,
+            predicted_tests=len(prediction.tests) if prediction else 0,
+            packaging_targets=len(prediction.packaging) if prediction else 0,
+            platform_targets=len(prediction.platforms) if prediction else 0,
+            premortem_items=len(session.repository_intelligence.premortem),
+        )
         if not session.title:
             session.title = await self._generate_session_title(session, text_only)
             await self._send_session_info(session)
@@ -2398,6 +2475,20 @@ class GlmAcpAgent(acp.Agent):
                         "finish_reason": result.finish_reason,
                     },
                 )
+                session.repository_intelligence.compare(
+                    session.cwd,
+                    session.verification.changed_paths,
+                    [event.canonical_command for event in session.verification.events],
+                )
+                impact = session.repository_intelligence.prediction
+                self._telemetry.record(
+                    "repository_impact",
+                    session.id,
+                    compared=bool(impact and impact.compared),
+                    observed_files=len(impact.observed_files) if impact else 0,
+                    unexpected_files=len(impact.unexpected_files) if impact else 0,
+                    observed_checks=len(impact.observed_checks) if impact else 0,
+                )
                 self._telemetry.record(
                     "turn_complete",
                     session.id,
@@ -2800,6 +2891,7 @@ class GlmAcpAgent(acp.Agent):
                             continue
 
                 tool_failed = False
+                tool_result: ToolResult | None = None
                 tool_started = time.monotonic()
                 try:
                     if tool_name == "delegate_task":
@@ -2965,6 +3057,45 @@ class GlmAcpAgent(acp.Agent):
                     await self._fail_tool(session.id, tc_id, error_msg)
                     if tool_name == "run_command":
                         failed_command_pending = True
+
+                observed_paths = self._tool_paths(tool_name, tool_args)
+                if tool_result is not None:
+                    observed_paths.extend(
+                        tool_result.changed_paths
+                        or ([tool_result.file_path] if tool_result.file_path else [])
+                    )
+                session.repository_intelligence.observe_paths(
+                    session.cwd,
+                    observed_paths,
+                    "semantic" if tool_name == "semantic_code" else "tool",
+                )
+                session.repository_intelligence.compare(
+                    session.cwd,
+                    session.verification.changed_paths,
+                    [event.canonical_command for event in session.verification.events],
+                )
+                fresh_ids = [
+                    item.id
+                    for item in session.awareness.evidence[-4:]
+                    if not item.stale and item.source != "user"
+                ]
+                attribution = session.meta_learning.observe(
+                    tool=tool_name,
+                    success=not tool_failed,
+                    output=original_output,
+                    evidence_ids=fresh_ids,
+                    edit_generation=session.verification.edit_generation,
+                )
+                if attribution is not None:
+                    self._telemetry.record(
+                        "causal_attribution",
+                        session.id,
+                        cause=attribution.cause,
+                        intervention=attribution.intervention,
+                        corrected=attribution.corrected,
+                        evidence_count=len(attribution.evidence_ids),
+                    )
+                    session.refresh_system_prompt()
 
                 duration_ms = int((time.monotonic() - tool_started) * 1000)
                 capability_tool_calls += 1
@@ -4015,9 +4146,7 @@ class GlmAcpAgent(acp.Agent):
                 )
             if argument.lower() in {"auto on", "auto-checkpoint on"}:
                 try:
-                    state = await asyncio.to_thread(
-                        self._checkpoints.set_auto_checkpoint, True
-                    )
+                    state = await asyncio.to_thread(self._checkpoints.set_auto_checkpoint, True)
                 except (CheckpointError, OSError) as error:
                     return f"❌ Could not enable auto-checkpoint: {error}"
                 return (
@@ -4027,9 +4156,7 @@ class GlmAcpAgent(acp.Agent):
                 )
             if argument.lower() in {"auto off", "auto-checkpoint off"}:
                 try:
-                    state = await asyncio.to_thread(
-                        self._checkpoints.set_auto_checkpoint, False
-                    )
+                    state = await asyncio.to_thread(self._checkpoints.set_auto_checkpoint, False)
                 except (CheckpointError, OSError) as error:
                     return f"❌ Could not disable auto-checkpoint: {error}"
                 session.active_checkpoint_id = ""
@@ -4238,6 +4365,81 @@ class GlmAcpAgent(acp.Agent):
             await self._save_session(session)
             return session.deliberation.render()
 
+        elif command == "/repository":
+            session.refresh_system_prompt()
+            session.repository_intelligence.compare(
+                session.cwd,
+                session.verification.changed_paths,
+                [event.canonical_command for event in session.verification.events],
+            )
+            await self._save_session(session)
+            return session.repository_intelligence.render()
+
+        elif command == "/meta-learning" or command.startswith("/meta-learning "):
+            argument = command.partition(" ")[2].strip()
+            if not argument:
+                return session.meta_learning.render()
+            if argument.startswith("evaluate "):
+                values = argument.split(maxsplit=2)
+                if len(values) != 3:
+                    return "Use `/meta-learning evaluate <baseline.json> <candidate.json>`."
+                reports: list[dict[str, Any]] = []
+                root = Path(session.cwd).resolve()
+                for raw in values[1:]:
+                    try:
+                        path = (
+                            (root / raw).resolve()
+                            if not Path(raw).is_absolute()
+                            else Path(raw).resolve()
+                        )
+                        path.relative_to(root)
+                        if path.stat().st_size > 2 * 1024 * 1024:
+                            raise ValueError("report exceeds 2 MiB")
+                        value = json.loads(path.read_text(encoding="utf-8"))
+                        if not isinstance(value, dict):
+                            raise ValueError("report root must be an object")
+                        reports.append(value)
+                    except (OSError, ValueError, json.JSONDecodeError) as error:
+                        return f"Metacognitive evaluation report is invalid: {error}"
+                try:
+                    gate = session.meta_learning.evaluate(reports[0], reports[1])
+                except ValueError as error:
+                    return f"Metacognitive evaluation failed closed: {error}"
+                self._telemetry.record(
+                    "metacognitive_evaluation",
+                    session.id,
+                    passed=gate.passed,
+                    reason_count=len(gate.reasons),
+                    fresh_gain=int(gate.metrics.get("fresh_gain", 0)),
+                    mutated_gain=int(gate.metrics.get("mutated_gain", 0)),
+                )
+                await self._save_session(session)
+                return "```json\n" + json.dumps(gate.to_dict(), indent=2) + "\n```"
+            if argument.startswith("promote "):
+                strategy = argument.partition(" ")[2].strip()
+                if session.meta_learning.last_gate is None:
+                    return "Run a compatible fresh/mutated evaluation before promotion."
+                try:
+                    candidate = session.meta_learning.promote(
+                        strategy, session.meta_learning.last_gate
+                    )
+                except ValueError as error:
+                    return f"Metacognitive promotion failed closed: {error}"
+                self._telemetry.record(
+                    "metacognitive_candidate",
+                    session.id,
+                    strategy=strategy,
+                    status="promoted",
+                    support_count=len(candidate.supporting_attributions),
+                )
+                session.refresh_system_prompt()
+                await self._save_session(session)
+                return f"Promoted evaluated advisory strategy `{strategy}`."
+            return (
+                "Use `/meta-learning`, `/meta-learning evaluate <baseline.json> "
+                "<candidate.json>`, or `/meta-learning promote <strategy>`."
+            )
+
         elif command == "/clear-history":
             system_msg = (
                 session.messages[0]
@@ -4256,6 +4458,8 @@ class GlmAcpAgent(acp.Agent):
             session.awareness = EpistemicLedger()
             session.metacognition = MetacognitiveController()
             session.deliberation = GroundedDeliberation()
+            session.repository_intelligence = RepositoryIntelligence()
+            session.meta_learning = SafeMetacognitiveLearning()
             session.compaction_learning_proposals = []
             session.compaction_quality_history = []
             session.refresh_system_prompt()
@@ -4414,6 +4618,10 @@ class GlmAcpAgent(acp.Agent):
                 f"- **Information action:** "
                 f"{recommendation.tool if recommendation else 'none'}\n"
                 f"- **Evidence critic:** {critic.outcome if critic else 'not run'}\n"
+                f"- **Repository world:** {len(session.repository_intelligence.nodes)} nodes · "
+                f"{len(session.repository_intelligence.edges)} edges\n"
+                f"- **Metacognitive learning:** {len(session.meta_learning.attributions)} "
+                f"attributions · {len(session.meta_learning.candidates)} candidates\n"
                 f"- **Isolated profile:** {active_profile()}\n"
                 f"- **OS sandbox mode:** {sandbox_mode()}\n"
                 f"- **Latest checkpoint:** {session.last_checkpoint_id or 'none'}\n"
@@ -4528,7 +4736,7 @@ class GlmAcpAgent(acp.Agent):
             return (
                 f"Unknown command: {command}\nAvailable commands: /compact, "
                 "/clear-plan, /clear-history, /diff, /export, /status, /memory, "
-                "/awareness, /metacognition, /deliberation, "
+                "/awareness, /metacognition, /deliberation, /repository, /meta-learning, "
                 "/skills, /profile, /curator, /sessions"
                 ", /lineage, /goal, /subgoal"
                 ", /checkpoint, /rollback, /plugins"

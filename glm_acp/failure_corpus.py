@@ -103,6 +103,18 @@ class FailureCorpus:
     def list(self) -> list[dict[str, Any]]:
         return list(reversed(self._read()))[:200]
 
+    def project_metadata(self, workspace: str) -> list[dict[str, Any]]:
+        """Return bounded non-identifying failure classes for one repository."""
+        project = hashlib.sha256(str(Path(workspace).resolve()).encode()).hexdigest()[:16]
+        return [
+            {
+                "failure_kind": str(item.get("failure_kind", "other"))[:40],
+                "tool": str(item.get("tool", ""))[:100],
+            }
+            for item in self._read()
+            if item.get("project") == project
+        ][-200:]
+
     def discard(self, fingerprint: str) -> bool:
         values = self._read()
         kept = [item for item in values if item.get("fingerprint") != fingerprint]

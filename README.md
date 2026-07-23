@@ -21,6 +21,9 @@ Native GLM ACP — an open-source ACP-native coding agent runtime for Z.ai GLM m
 - **Inspectable awareness** — typed evidence-backed observations, assumptions, hypotheses, contradictions, unknowns, and capability limits with edit-aware freshness and completion certificates
 - **Adaptive metacognitive control** — separates six uncertainty classes, selects direct/grounded/deliberate/high-assurance posture, and learns only from redacted aggregate outcomes
 - **Grounded deliberation** — independent evidence-only criticism, falsifiable multi-hypothesis diagnosis, and cost-aware evidence-tool ranking without storing private reasoning
+- **Lazy repository intelligence** — task-relevant LSP, imports, tests, manifests, instructions, ownership, changes, and historical failure classes form a bounded on-demand world model
+- **Impact prediction and pre-mortems** — risky edits forecast affected files, checks, packaging, and platforms before mutation, then compare the forecast with observed outcomes
+- **Safe metacognitive learning** — typed causal attribution may draft advisory strategies, but fresh time-split and transformed evaluation gains plus explicit promotion are mandatory before use
 - **Multi-root workspaces** — full support for additional workspace directories
 - **Progressive repository rules** — scoped AGENTS, Claude, Hermes, and Cursor instructions load before affected edits
 - **Evidence-led verification** — canonical project checks are recorded with scope and invalidated by later edits
@@ -101,6 +104,10 @@ Type these in the chat input:
 | `/awareness` | Show knowledge, uncertainty, stale evidence, capability limits, next evidence, and completion coverage |
 | `/metacognition` | Show uncertainty classes, risk, adaptive execution mode, and matching empirical capability profile |
 | `/deliberation` | Show falsifiable hypotheses, evidence-backed tests, critic verdict, and value-of-information ranking |
+| `/repository` | Show the bounded repository world, predicted impact, observed comparison, and high-risk pre-mortem |
+| `/meta-learning` | Show causal attributions, inert strategy drafts, promotions, and the latest evaluation gate |
+| `/meta-learning evaluate BASE CANDIDATE` | Gate workspace-local reports on fresh, mutated, quality, safety, calibration, and cost metrics |
+| `/meta-learning promote STRATEGY` | Explicitly promote a twice-supported strategy after a passing evaluation gate |
 | `/observability [json]` | Show the local metadata-only quality, efficiency, and safety dashboard |
 
 ### Task Plans
@@ -266,6 +273,33 @@ primary response, conversation history, or private reasoning. Its approval must
 cite fresh evidence. Deterministic value-of-information ranking recommends the
 cheapest reliable available action for the most important uncertainty; normal
 permissions, policy, sandboxing, and tool validation still apply.
+
+Repository intelligence is lazy: it never snapshots the checkout and never stores
+source bodies. For non-trivial tasks it follows only bounded task targets, current
+changes, manifests, applicable instruction files, nearby tests, statically resolved
+imports, semantic-tool paths, and coarse historical failure classes. Before a risky
+edit it records an impact prediction and short counterfactual pre-mortem.
+`/repository` compares that prediction with files and canonical checks actually
+observed after the edit, exposing unexpected impact instead of silently treating
+the initial forecast as truth.
+
+Safe metacognitive learning stores only typed cause, intervention, evidence IDs,
+and aggregate outcomes—never prompts, tool bodies, commands, paths, or private
+reasoning. A corrected failure can draft one of the fixed strategies for asking,
+browsing, LSP navigation, hypothesis branching, verification, or stopping. Drafts
+are inert. Promotion requires two causal supports, an explicit user action, and a
+compatible evaluation that improves overall, fresh time-split, and deterministically
+transformed cases without per-case, false-completion, unsupported-claim,
+clarification, evidence-freshness, contradiction, calibration, repeated-call,
+latency, token, safety, or small-task-overthinking regression.
+
+```bash
+# Inspect the 11 fresh cases and their 11 deterministic mutations
+glm-acp meta-cases --json
+
+# Fail closed unless the candidate clears every quality and cost gate
+glm-acp meta-eval baseline.json candidate.json
+```
 
 ### Scheduled Automation
 
@@ -453,10 +487,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v1.6.2` before running the Unix
-installer, or pass `-Version v1.6.2` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v1.7.0` before running the Unix
+installer, or pass `-Version v1.7.0` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v1.6.2](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.6.2).
+[v1.7.0](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.7.0).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -585,6 +619,8 @@ glm_acp/
 ├── awareness.py     # Typed epistemic ledger and completion certificates
 ├── metacognition.py # Uncertainty, adaptive modes, and aggregate capability profiles
 ├── deliberation.py  # Evidence critic, falsifiable hypotheses, and information value
+├── repository_intelligence.py # Lazy world model, impact comparison, and pre-mortems
+├── meta_learning.py # Causal attribution and fresh/mutated strategy evaluation gates
 ├── config.py        # Model registry, API endpoints, constants
 ├── glm_client.py    # Streaming Z.ai API client (SSE, retry, reasoning, tools)
 ├── mcp.py           # Z.ai and user-configured MCP transports
@@ -786,7 +822,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-1.6.2.dist-info  (and editable-install metadata)
+# expect: glm_acp-1.7.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
