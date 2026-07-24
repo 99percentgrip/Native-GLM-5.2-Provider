@@ -21,6 +21,33 @@ MAX_DELEGATE_TOOL_CALLS_PER_TURN = 24
 MAX_DELEGATE_INPUT_TOKENS_PER_TURN = 120_000
 MAX_DELEGATE_OUTPUT_TOKENS_PER_TURN = 16_000
 
+# Bounds for the per-session iteration override (``/max-iterations`` and
+# ``GLM_ACP_MAX_TOOL_ITERATIONS``). The lower bound guards against accidental
+# zero/negative; the upper bound guards against runaway loops.
+MIN_TOOL_ITERATIONS = 1
+MAX_TOOL_ITERATIONS_CEILING = 1000
+
+
+def max_tool_iterations() -> int:
+    """Resolve the default per-turn tool-call iteration cap.
+
+    Honours the ``GLM_ACP_MAX_TOOL_ITERATIONS`` environment variable if set
+    to an integer within ``[MIN_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS_CEILING]``;
+    otherwise falls back to the ``MAX_TOOL_ITERATIONS`` constant (50).
+    """
+    raw = os.environ.get("GLM_ACP_MAX_TOOL_ITERATIONS")
+    if raw:
+        try:
+            requested = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return MAX_TOOL_ITERATIONS
+        if requested < MIN_TOOL_ITERATIONS:
+            return MIN_TOOL_ITERATIONS
+        if requested > MAX_TOOL_ITERATIONS_CEILING:
+            return MAX_TOOL_ITERATIONS_CEILING
+        return requested
+    return MAX_TOOL_ITERATIONS
+
 # Retry configuration for transient API errors (429, 500, 502, 503, 504)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds, exponential: 1s, 2s, 4s

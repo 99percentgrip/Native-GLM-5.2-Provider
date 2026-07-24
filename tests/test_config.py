@@ -128,6 +128,80 @@ class TestConstants:
     def test_generation_profiles_adjust_one_sampling_control(self):
         assert GENERATION_PROFILES["balanced"]["temperature"] is None
         assert GENERATION_PROFILES["balanced"]["top_p"] is None
+
+
+class TestMaxToolIterations:
+    """Per-turn tool-call iteration cap — env-var override + bounds clamp."""
+
+    def test_default_is_fifty(self, monkeypatch):
+        monkeypatch.delenv("GLM_ACP_MAX_TOOL_ITERATIONS", raising=False)
+        from glm_acp.config import max_tool_iterations
+
+        assert max_tool_iterations() == 50
+
+    def test_env_var_override(self, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "100")
+        from glm_acp.config import max_tool_iterations
+
+        assert max_tool_iterations() == 100
+
+    def test_env_var_clamped_to_ceiling(self, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "5000")
+        from glm_acp.config import MAX_TOOL_ITERATIONS_CEILING, max_tool_iterations
+
+        assert max_tool_iterations() == MAX_TOOL_ITERATIONS_CEILING == 1000
+
+    def test_env_var_clamped_to_minimum(self, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "0")
+        from glm_acp.config import MIN_TOOL_ITERATIONS, max_tool_iterations
+
+        assert max_tool_iterations() == MIN_TOOL_ITERATIONS == 1
+
+    def test_env_var_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "not-a-number")
+        from glm_acp.config import max_tool_iterations
+
+        assert max_tool_iterations() == 50
+
+    def test_negative_env_var_clamped_to_minimum(self, monkeypatch):
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "-7")
+        from glm_acp.config import max_tool_iterations
+
+        assert max_tool_iterations() == 1
+
+    def test_session_default_uses_env_var(self, monkeypatch):
+        """A new Session picks up the env var at creation time."""
+        monkeypatch.setenv("GLM_ACP_MAX_TOOL_ITERATIONS", "200")
+        from glm_acp.agent import Session
+
+        session = Session("test-iter", cwd=".")
+        assert session.max_tool_iterations == 200
+
+    @pytest.mark.asyncio
+    async def test_set_config_option_updates_session_cap(self, monkeypatch):
+        """``/max-iterations <N>`` routes through set_config_option."""
+        monkeypatch.delenv("GLM_ACP_MAX_TOOL_ITERATIONS", raising=False)
+        from glm_acp.agent import GlmAcpAgent, Session
+
+        agent = GlmAcpAgent()
+        session = Session("test-iter-cfg", cwd=".")
+        agent._sessions["test-iter-cfg"] = session
+        assert session.max_tool_iterations == 50
+
+        # Raise to 200 — signature is (config_id, session_id, value).
+        await agent.set_config_option("max_tool_iterations", "test-iter-cfg", "200")
+        assert session.max_tool_iterations == 200
+
+        # Out-of-range values get clamped, not rejected
+        await agent.set_config_option("max_tool_iterations", "test-iter-cfg", "99999")
+        assert session.max_tool_iterations == 1000
+
+        await agent.set_config_option("max_tool_iterations", "test-iter-cfg", "-5")
+        assert session.max_tool_iterations == 1
+
+        # Garbage falls back to default 50
+        await agent.set_config_option("max_tool_iterations", "test-iter-cfg", "garbage")
+        assert session.max_tool_iterations == 50
         for profile in ("precise", "exploratory"):
             info = GENERATION_PROFILES[profile]
             assert sum(info[key] is not None for key in ("temperature", "top_p")) == 1

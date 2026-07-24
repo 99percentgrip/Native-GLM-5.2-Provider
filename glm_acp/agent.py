@@ -79,10 +79,13 @@ from .config import (
     MAX_DELEGATIONS_PER_TURN,
     MAX_REPEATED_TOOL_BATCHES,
     MAX_TOOL_ITERATIONS,
+    MAX_TOOL_ITERATIONS_CEILING,
+    MIN_TOOL_ITERATIONS,
     MODELS,
     THOUGHT_LEVELS,
     VISION_MODELS,
     has_api_key,
+    max_tool_iterations,
     models_for_plan,
     persist_reasoning,
     thought_levels_for_model,
@@ -404,6 +407,11 @@ class Session:
         self.goal_turns = 0
         self.mixture_mode = "off"
         self.scheduled_run = False
+        # Per-session tool-call iteration cap. The user can change this live
+        # via the ``/max-iterations [N]`` slash command (routed through
+        # ``set_config_option("max_tool_iterations", N)``). Defaults to the
+        # value resolved from ``GLM_ACP_MAX_TOOL_ITERATIONS`` or 50.
+        self.max_tool_iterations: int = max_tool_iterations()
         self.last_checkpoint_id = ""
         self.active_checkpoint_id = ""
         # Cumulative cost tracking per session
@@ -1796,6 +1804,18 @@ class GlmAcpAgent(acp.Agent):
                 session.mixture_mode = requested
                 session.moa_cache_key = ""
                 session.moa_cache_advice = []
+        elif config_id == "max_tool_iterations":
+            # Per-session override of the per-turn tool-call iteration cap.
+            # Driven by the ``/max-iterations [N]`` slash command. Clamped
+            # to ``[MIN_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS_CEILING]``.
+            try:
+                requested = int(str(value).strip())
+            except (TypeError, ValueError):
+                requested = MAX_TOOL_ITERATIONS
+            session.max_tool_iterations = max(
+                MIN_TOOL_ITERATIONS,
+                min(MAX_TOOL_ITERATIONS_CEILING, requested),
+            )
 
         if (
             session.auxiliary_model != DEFAULT_AUXILIARY_MODEL
@@ -2372,7 +2392,7 @@ class GlmAcpAgent(acp.Agent):
             "output_tokens": MAX_DELEGATE_OUTPUT_TOKENS_PER_TURN,
         }
 
-        for turn_iter in range(MAX_TOOL_ITERATIONS):
+        for turn_iter in range(session.max_tool_iterations):
             # --- Check for cancellation ---
             if client.cancelled:
                 self._record_capability_outcome(
@@ -3311,11 +3331,14 @@ class GlmAcpAgent(acp.Agent):
             await self._send_message(
                 session.id,
                 "\n\n⚠️ **Reached the maximum number of tool-call iterations "
-                f"({MAX_TOOL_ITERATIONS}).** "
+                f"({session.max_tool_iterations}).** "
                 "The conversation will continue, but the current task may be incomplete. "
-                "Ask me to continue if needed.\n",
+                "Use `/max-iterations <N>` to raise the cap (default 50, max 1000), "
+                "then ask me to continue.\n",
             )
-            logger.warning("Turn ended: %d-iteration limit reached", MAX_TOOL_ITERATIONS)
+            logger.warning(
+                "Turn ended: %d-iteration limit reached", session.max_tool_iterations
+            )
 
             self._record_capability_outcome(
                 session,

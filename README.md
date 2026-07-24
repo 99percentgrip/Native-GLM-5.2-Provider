@@ -117,6 +117,7 @@ Type these in the chat input:
 | `/meta-learning evaluate BASE CANDIDATE` | Gate workspace-local reports on fresh, mutated, quality, safety, calibration, and cost metrics |
 | `/meta-learning promote STRATEGY` | Explicitly promote a twice-supported strategy after a passing evaluation gate |
 | `/observability [json]` | Show the local metadata-only quality, efficiency, and safety dashboard |
+| `/max-iterations [N]` | Show (no arg) or set (e.g. `/max-iterations 100`) the per-turn tool-call iteration cap. Default 50, max 1000. Clamped silently. Also settable at startup via `GLM_ACP_MAX_TOOL_ITERATIONS=100` |
 
 ### Task Plans
 
@@ -523,10 +524,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v2.0.9` before running the Unix
-installer, or pass `-Version v2.0.9` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v2.1.0` before running the Unix
+installer, or pass `-Version v2.1.0` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v2.0.9](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.9).
+[v2.1.0](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.1.0).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -1034,7 +1035,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-2.0.9.dist-info  (and editable-install metadata)
+# expect: glm_acp-2.1.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials

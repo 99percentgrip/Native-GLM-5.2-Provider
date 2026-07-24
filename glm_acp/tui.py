@@ -71,6 +71,7 @@ LOCAL_COMMANDS = {
     "/reasoning-panel": "Show or hide the live reasoning panel",
     "/toggle-thinking": "Alias for /reasoning-panel",
     "/clear-view": "Clear only the visible transcript",
+    "/max-iterations": "Show or set the per-turn tool-call iteration cap (default 50, max 1000)",
     "/copy": "Copy the last response to clipboard (or /copy <N> for response N, /copy all)",
     "/native-mouse": "Toggle native terminal mouse mode (release TUI mouse capture)",
     "/planmode": "Activate Plan Mode with a PRD: /planmode <your requirements>",
@@ -952,6 +953,41 @@ class NativeGlmTui(App[int]):
             # the terminal emulator handles right-click (native context
             # menu) and click-drag (native selection → OS clipboard).
             self.action_toggle_native_mouse()
+            return True
+        if text.startswith("/max-iterations"):
+            arg = text.partition(" ")[2].strip()
+            session = getattr(self.agent, "_sessions", {}).get(self.session_id)
+            if session is None:
+                self.notify("Session not ready", severity="warning")
+                return True
+            current = getattr(session, "max_tool_iterations", 50)
+            if not arg:
+                self.notify(
+                    f"Current tool-call iteration cap: {current} per turn "
+                    "(use /max-iterations <N> to set)",
+                    title="Max iterations",
+                    severity="information",
+                )
+                return True
+            try:
+                new_cap = int(arg)
+            except ValueError:
+                self.notify(
+                    f"Invalid value: {arg!r} — must be an integer",
+                    severity="error",
+                )
+                return True
+            # set_config_option signature is (config_id, session_id, value).
+            # It clamps to [1, 1000] and persists on session.
+            await self.agent.set_config_option(
+                "max_tool_iterations", self.session_id, str(new_cap)
+            )
+            actual = session.max_tool_iterations
+            self.notify(
+                f"Tool-call iteration cap: {current} → {actual}",
+                title="Max iterations updated",
+                severity="success",
+            )
             return True
         if text == "/clear-view":
             await self.action_clear_transcript()
