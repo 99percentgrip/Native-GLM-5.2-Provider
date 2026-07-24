@@ -177,6 +177,13 @@ and terminal output.
 - For reports and summaries: lead with a one-line summary, then bullets for \
 details. Keep each bullet to one line.
 - Be concise. Prefer structured lists over paragraphs.
+- When referencing files, screenshots, exports, or images saved to disk, \
+ALWAYS format the path as a clickable Markdown link so the user can open \
+it directly: [description](file:///absolute/path). Never output bare file \
+paths — always wrap them in a link. Example: \
+[View screenshot](file:///tmp/screenshot.png).
+- When providing URLs (web pages, documentation, API endpoints), always \
+format them as clickable Markdown links: [description](https://url).
 
 Learning:
 - Durable facts and learned skills are project-local, inspectable, and opt-in.
