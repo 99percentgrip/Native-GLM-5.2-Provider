@@ -12,7 +12,7 @@ streaming, 1M context, and auto-continuation for long generations.
 
 - **Entry point**: `__main__.py` → `cli.py:main()` → `agent.py:run()`
 - **CLI, terminal auth, and uninstall routing**: `cli.py` → `main()` / `configure_credentials()`
-- **Standalone terminal frontends**: `terminal_cli.py` owns line/JSON routing and `tui.py` owns the cross-platform Textual conversation/reasoning/tool/plan/status panels, approval/settings modals, and key bindings; both must use the same `GlmAcpAgent` session/update and permission interfaces as ACP editors without forking the harness loop
+- **Standalone terminal frontends**: `terminal_cli.py` owns line/JSON routing and `tui.py` owns the cross-platform Textual conversation/reasoning/tool/plan/status panels, approval/settings modals, and key bindings; both must use the same `GlmAcpAgent` session/update and permission interfaces as ACP editors without forking the harness loop. Plain-mode slash commands (`/max-iterations`, `/planmode`, `/help`, `/exit`, `/quit`, `/image`) are routed through the shared `_handle_plain_command` helper in `terminal_cli.py` so the line/JSON frontend has parity with the TUI for agent-level commands (panel-only commands like `/clear-view` and `/settings` remain TUI-specific)
 - **Public-install removal**: `uninstall.py` — frozen-copy validation, command/PATH cleanup, credential purge, and guarded Zed JSONC editing
 - **Frozen executable entry**: `launcher.py` → absolute import of `cli.main()`
 - **ACP protocol**: `agent.py` — implements `acp.Agent` (initialize, new_session, load_session, resume_session, close_session, list_sessions, prompt, set_config_option, set_session_mode)

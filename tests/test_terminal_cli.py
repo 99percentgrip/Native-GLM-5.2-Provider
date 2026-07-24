@@ -103,3 +103,168 @@ async def test_terminal_configuration_uses_agent_session_methods():
     assert ("config", "permission_mode", "read") in calls
     assert ("config", "mixture_mode", "enabled") in calls
     assert ("mode", "ask") in calls
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_exit_and_quit_break(capsys):
+    """``/exit`` and ``/quit`` ask the caller to break the loop."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    pending: list[str] = []
+    for cmd in ("/exit", "/quit", "  /exit  "):
+        decision = await _handle_plain_command(
+            cmd, agent=None, session_id="s", session=None, pending_images=pending
+        )
+        assert decision == "break"
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_image_queues_and_skips(capsys):
+    """``/image <path>`` queues the image and signals skip (don't send to model)."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    pending: list[str] = []
+    decision = await _handle_plain_command(
+        "/image /tmp/foo.png",
+        agent=None,
+        session_id="s",
+        session=None,
+        pending_images=pending,
+    )
+    assert decision == "skip"
+    assert pending == ["/tmp/foo.png"]
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_help_prints_and_skips(capsys):
+    """``/help`` prints the available commands and signals skip."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    decision = await _handle_plain_command(
+        "/help", agent=None, session_id="s", session=None, pending_images=[]
+    )
+    assert decision == "skip"
+    captured = capsys.readouterr()
+    assert "/max-iterations" in captured.err
+    assert "/planmode" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_max_iterations_no_arg_shows_current(capsys):
+    """``/max-iterations`` with no arg shows the current cap and signals skip."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    session = SimpleNamespace(max_tool_iterations=50)
+    decision = await _handle_plain_command(
+        "/max-iterations",
+        agent=None,
+        session_id="s",
+        session=session,
+        pending_images=[],
+    )
+    assert decision == "skip"
+    captured = capsys.readouterr()
+    assert "50" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_max_iterations_with_arg_calls_set_config_option():
+    """``/max-iterations 200`` routes through agent.set_config_option."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    captured_calls = []
+
+    class AgentStub:
+        async def set_config_option(self, config_id, session_id, value):
+            captured_calls.append((config_id, session_id, value))
+
+    session = SimpleNamespace(max_tool_iterations=50)
+    decision = await _handle_plain_command(
+        "/max-iterations 200",
+        agent=AgentStub(),
+        session_id="test-session",
+        session=session,
+        pending_images=[],
+    )
+    assert decision == "skip"
+    # set_config_option signature is (config_id, session_id, value).
+    assert captured_calls == [("max_tool_iterations", "test-session", "200")]
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_max_iterations_invalid_value_skips(capsys):
+    """``/max-iterations abc`` is rejected without calling the agent."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    class FailingStub:
+        async def set_config_option(self, *args, **kwargs):
+            raise AssertionError("set_config_option must not be called for invalid input")
+
+    decision = await _handle_plain_command(
+        "/max-iterations abc",
+        agent=FailingStub(),
+        session_id="s",
+        session=SimpleNamespace(max_tool_iterations=50),
+        pending_images=[],
+    )
+    assert decision == "skip"
+    captured = capsys.readouterr()
+    assert "Invalid value" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_planmode_returns_prd_as_text():
+    """``/planmode <PRD>`` activates plan mode and returns the PRD to be sent."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    captured = []
+
+    class AgentStub:
+        async def set_session_mode(self, mode_id, session_id):
+            captured.append((mode_id, session_id))
+
+    decision = await _handle_plain_command(
+        "/planmode build a todo app in React",
+        agent=AgentStub(),
+        session_id="test-session",
+        session=None,
+        pending_images=[],
+    )
+    # The decision is the rewritten text (the PRD) that gets submitted next.
+    assert decision == "build a todo app in React"
+    assert captured == [("plan", "test-session")]
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_planmode_empty_prd_falls_through():
+    """``/planmode`` with no argument is not transformed — falls through to model."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    class FailingStub:
+        async def set_session_mode(self, *args, **kwargs):
+            raise AssertionError("set_session_mode must not be called for empty PRD")
+
+    decision = await _handle_plain_command(
+        "/planmode ",
+        agent=FailingStub(),
+        session_id="s",
+        session=None,
+        pending_images=[],
+    )
+    # No transformation happened; the caller will submit "/planmode " as text.
+    assert decision is None
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_non_command_returns_none():
+    """Plain text (not a slash command) returns None and gets sent to the model."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    decision = await _handle_plain_command(
+        "hello world",
+        agent=None,
+        session_id="s",
+        session=None,
+        pending_images=[],
+    )
+    assert decision is None

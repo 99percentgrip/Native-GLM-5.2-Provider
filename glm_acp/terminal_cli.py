@@ -246,6 +246,69 @@ async def _configure(agent: GlmAcpAgent, session_id: str, args: argparse.Namespa
         await agent.set_session_mode(mode_id=args.mode, session_id=session_id)
 
 
+async def _handle_plain_command(
+    text: str,
+    agent: GlmAcpAgent,
+    session_id: str,
+    session: Any,
+    pending_images: list[str],
+) -> str | None:
+    """Handle plain-mode slash commands.
+
+    Returns:
+      - ``"break"`` if the loop should exit (e.g. /exit, /quit)
+      - ``"skip"`` if the line was handled locally and should NOT be sent to the model
+      - ``None`` if the line (possibly mutated for /planmode) should be sent to the model
+      - the (possibly rewritten) text itself if a slash command transformed it
+    """
+    stripped = text.strip()
+    if stripped in {"/exit", "/quit"}:
+        return "break"
+    if text.startswith("/image "):
+        pending_images.append(text.partition(" ")[2].strip())
+        return "skip"
+    if stripped == "/help":
+        print(
+            "Available commands in plain mode:\n"
+            "  /exit, /quit          End the session\n"
+            "  /image <path>         Queue an image for the next prompt\n"
+            "  /max-iterations [N]   Show or set the per-turn tool-call cap\n"
+            "                        (default 50, max 1000; e.g. /max-iterations 200)\n"
+            "  /planmode <PRD>       Activate read-only Plan Mode\n"
+            "  Anything else is sent to the model as a prompt.",
+            file=sys.stderr,
+        )
+        return "skip"
+    if stripped == "/max-iterations" or text.startswith("/max-iterations "):
+        arg = text.partition(" ")[2].strip()
+        current = getattr(session, "max_tool_iterations", 50)
+        if not arg:
+            print(
+                f"Current tool-call iteration cap: {current} per turn "
+                "(use /max-iterations <N> to set)",
+                file=sys.stderr,
+            )
+            return "skip"
+        try:
+            new_cap = int(arg)
+        except ValueError:
+            print(f"Invalid value: {arg!r} — must be an integer", file=sys.stderr)
+            return "skip"
+        # set_config_option signature is (config_id, session_id, value).
+        # It clamps to [1, 1000] and persists on session.
+        await agent.set_config_option("max_tool_iterations", session_id, str(new_cap))
+        actual = session.max_tool_iterations
+        print(f"Tool-call iteration cap: {current} → {actual}", file=sys.stderr)
+        return "skip"
+    if text.startswith("/planmode "):
+        prd = text.partition(" ")[2].strip()
+        if prd:
+            await agent.set_session_mode(mode_id="plan", session_id=session_id)
+            print("Plan Mode activated — read-only research mode", file=sys.stderr)
+            return prd  # the PRD becomes the next prompt
+    return None
+
+
 async def run_chat(args: argparse.Namespace) -> int:
     cwd = str(Path(args.cwd).expanduser().resolve())
     if not Path(cwd).is_dir():
@@ -305,7 +368,8 @@ async def run_chat(args: argparse.Namespace) -> int:
             print(
                 f"Native GLM ACP session {session_id}\nWorkspace: {cwd}\n"
                 f"Model: {session.model} · Permissions: {session.permission_mode}\n"
-                "Type /help for harness commands; /exit quits. Ctrl-C cancels a turn.",
+                "Type /help for harness commands (including /max-iterations and /planmode); "
+                "/exit quits. Ctrl-C cancels a turn.",
                 file=sys.stderr,
             )
             if session.permission_mode == "bypass":
@@ -342,18 +406,23 @@ async def run_chat(args: argparse.Namespace) -> int:
             except KeyboardInterrupt:
                 print(file=sys.stderr)
                 continue
-            if text.strip() in {"/exit", "/quit"}:
+            decision = await _handle_plain_command(
+                text, agent, session_id, session, pending_images
+            )
+            if decision == "break":
                 break
-            if text.startswith("/image "):
-                pending_images.append(text.partition(" ")[2].strip())
-                print(f"Queued image: {pending_images[-1]}", file=sys.stderr)
+            if decision == "skip":
                 continue
+            if isinstance(decision, str):
+                # /planmode rewrites the text to the PRD before submitting.
+                text = decision
             try:
                 await submit(text, pending_images)
                 pending_images = []
             except KeyboardInterrupt:
                 await agent.cancel(session_id=session_id)
                 print("Turn cancelled.", file=sys.stderr)
+                continue
         return 0
     except (RuntimeError, ValueError, OSError) as error:
         print(f"Native GLM ACP chat failed: {error}", file=sys.stderr)
