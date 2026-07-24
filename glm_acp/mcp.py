@@ -526,10 +526,21 @@ class McpManager:
     async def invoke_preset(self, name: str, arguments: dict[str, Any]) -> Any:
         """Invoke a first-party Z.ai MCP capability with a stable ACP schema."""
         if name == "web_search":
+            # IMPORTANT: Z.ai's actual tool name on this endpoint is the
+            # snake_case ``web_search_prime`` (returned by tools/list), NOT
+            # camelCase ``webSearchPrime``. Z.ai responds with HTTP 200 and
+            # JSON-RPC error ``Tool not found: webSearchPrime`` for the wrong
+            # name. Note the asymmetry: the *reader* endpoint below really is
+            # camelCase ``webReader`` — confirmed against the live API on
+            # 2026-07-24. Do not "normalize" these names without first
+            # running ``tools/list`` against each endpoint.
             return await self.call(
                 "zai_search", "web_search_prime", {"search_query": arguments["query"]}
             )
         if name == "web_reader":
+            # ``webReader`` (camelCase) is correct on the reader endpoint —
+            # do not "fix" this to ``web_reader`` snake_case; Z.ai will
+            # respond ``Tool not found: web_reader``.
             return await self.call("zai_reader", "webReader", {"url": arguments["url"]})
         if name == "vision_analyze":
             return await self.call(

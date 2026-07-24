@@ -487,6 +487,16 @@ servers can be added to the user-only `mcp.json` beside `credentials.json`:
 Keep credentials in environment variables, not in this file. The built-in Z.ai
 servers reuse the existing API key without printing or persisting it.
 
+> ⚠️ **Tool-name asymmetry (don't accidentally break this):** Z.ai exposes the
+> search tool as `web_search_prime` (snake_case) and the reader tool as
+> `webReader` (camelCase) — both confirmed via `tools/list` against the live
+> API. Calling either endpoint with the wrong-case name returns HTTP 200 with
+> a JSON-RPC `Tool not found: <name>` error, which masks the failure behind a
+> successful HTTP status. Native GLM ACP maps the case-insensitive model-facing
+> names `web_search` and `web_reader` to the correct Z.ai names internally in
+> `glm_acp/mcp.py:invoke_preset`. If you fork or extend this code, do not
+> "normalize" these names without first re-running `tools/list`.
+
 ## Install
 
 ### One-command release install
@@ -513,10 +523,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v2.0.8` before running the Unix
-installer, or pass `-Version v2.0.8` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v2.0.9` before running the Unix
+installer, or pass `-Version v2.0.9` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v2.0.8](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.8).
+[v2.0.9](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.9).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -1024,7 +1034,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-2.0.8.dist-info  (and editable-install metadata)
+# expect: glm_acp-2.0.9.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
