@@ -29,12 +29,17 @@ async def test_http_mcp_initializes_discovers_remaps_and_calls(monkeypatch):
         if method == "notifications/initialized":
             return httpx.Response(202)
         if method == "initialize":
-            result = {"protocolVersion": "2025-06-18", "capabilities": {}}
+            result = {"protocolVersion": "2024-11-05", "capabilities": {}}
         elif method == "tools/list":
+            # The actual Z.ai tool name is snake_case ``web_search_prime``
+            # (not camelCase ``webSearchPrime`` — Z.ai responds with
+            # ``Tool not found: webSearchPrime`` for the wrong name).
+            # ``webReader`` (camelCase) is correct on the reader side; the
+            # naming asymmetry is real and confirmed against the live API.
             result = {
                 "tools": [
                     {
-                        "name": "webSearchPrime",
+                        "name": "web_search_prime",
                         "inputSchema": {
                             "type": "object",
                             "properties": {"search_query": {"type": "string"}},
@@ -63,7 +68,9 @@ async def test_http_mcp_initializes_discovers_remaps_and_calls(monkeypatch):
         "tools/list",
         "tools/call",
     ]
-    assert requests[-1][1]["Mcp-Name"] == "webSearchPrime"
+    # glm_acp must call Z.ai's actual snake_case tool name, not camelCase.
+    assert requests[-1][1]["Mcp-Name"] == "web_search_prime"
+    assert requests[-1][0]["params"]["name"] == "web_search_prime"
     await manager.aclose()
 
 

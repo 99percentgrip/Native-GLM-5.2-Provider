@@ -527,7 +527,7 @@ class McpManager:
         """Invoke a first-party Z.ai MCP capability with a stable ACP schema."""
         if name == "web_search":
             return await self.call(
-                "zai_search", "webSearchPrime", {"search_query": arguments["query"]}
+                "zai_search", "web_search_prime", {"search_query": arguments["query"]}
             )
         if name == "web_reader":
             return await self.call("zai_reader", "webReader", {"url": arguments["url"]})
