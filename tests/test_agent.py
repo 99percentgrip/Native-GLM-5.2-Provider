@@ -658,6 +658,57 @@ class TestSlashCommands:
         assert "not estimated" in result
 
     @pytest.mark.asyncio
+    async def test_max_iterations_acp_command_no_arg_shows_current(self, agent, session):
+        # The ACP editor path (Zed) — must advertise and handle /max-iterations
+        # exactly like the TUI and plain-mode paths.
+        session.max_tool_iterations = 75
+        result = await agent._handle_command(session, "/max-iterations")
+        assert "75" in result
+        assert "/max-iterations <N>" in result
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_acp_command_sets_value(self, agent, session):
+        agent._sessions[session.id] = session
+        session.max_tool_iterations = 50
+        result = await agent._handle_command(session, "/max-iterations 200")
+        assert session.max_tool_iterations == 200
+        assert "50" in result
+        assert "200" in result
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_acp_command_rejects_non_integer(self, agent, session):
+        result = await agent._handle_command(session, "/max-iterations abc")
+        assert "Invalid value" in result
+        assert session.max_tool_iterations == 50  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_acp_command_clamps_to_ceiling(self, agent, session):
+        # 5000 exceeds the 1000 ceiling — must clamp, not raise.
+        agent._sessions[session.id] = session
+        result = await agent._handle_command(session, "/max-iterations 5000")
+        assert session.max_tool_iterations == 1000
+        assert "1000" in result
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_advertised_in_acp_command_catalog(self, agent, session):
+        # Zed only forwards slash commands that the agent declares here;
+        # if /max-iterations is missing, Zed rejects it client-side with
+        # "is not a recognized command" before it ever reaches the agent.
+        captured: dict[str, object] = {}
+
+        async def fake_send(*args, **kwargs):
+            captured.update(kwargs)
+
+        agent._conn.session_update = fake_send  # type: ignore[assignment]
+        await agent._send_available_commands(session)
+
+        update = captured.get("update")
+        assert update is not None
+        # The AvailableCommands update carries a list of {name, description}.
+        names = {c.name for c in update.available_commands}
+        assert "max-iterations" in names
+
+    @pytest.mark.asyncio
     async def test_memory_and_skills_commands(self, agent, session, tmp_path):
         from glm_acp.memory import append_memory, write_learned_skill
 
@@ -1104,7 +1155,7 @@ class TestInitialize:
         resp = await agent.initialize(1)
         assert resp.agent_info.name == "glm-acp"
         assert resp.agent_info.title == "Native Z.ai GLM"
-        assert resp.agent_info.version == "2.1.2"
+        assert resp.agent_info.version == "2.1.3"
 
     @pytest.mark.asyncio
     async def test_registry_terminal_auth_method(self, agent):

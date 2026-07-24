@@ -4177,6 +4177,13 @@ class GlmAcpAgent(acp.Agent):
                 description="Refresh Z.ai Coding Plan 5-hour, weekly, and MCP quota limits",
             ),
             AvailableCommand(
+                name="max-iterations",
+                description=(
+                    "Show or set the per-turn tool-call iteration cap "
+                    "(default 50, max 1000; e.g. /max-iterations 200)"
+                ),
+            ),
+            AvailableCommand(
                 name="awareness",
                 description=(
                     "Show current evidence, uncertainty, contradictions, stale support, "
@@ -4282,6 +4289,7 @@ class GlmAcpAgent(acp.Agent):
                 "⌨️ **Harness Commands**\n\n"
                 "- `/status` — session, model, permissions, context, and evidence\n"
                 "- `/usage` — live Coding Plan 5-hour, weekly, and MCP quota\n"
+                "- `/max-iterations [N]` — per-turn tool-call cap (default 50, max 1000)\n"
                 "- `/compact [focus]` — compact older context\n"
                 "- `/diff` · `/export` · `/clear-plan` · `/clear-history`\n"
                 "- `/checkpoint …` · `/rollback [id]` · `/plugins`\n"
@@ -4305,6 +4313,27 @@ class GlmAcpAgent(acp.Agent):
             except Exception as error:
                 return f"⚠️ Coding Plan usage is unavailable: {error}"
             return self.format_provider_usage(usage)
+
+        if command == "/max-iterations" or command.startswith("/max-iterations "):
+            # Mirrors the TUI and plain-mode handlers in tui.py / terminal_cli.py.
+            # set_config_option signature is (config_id, session_id, value);
+            # it clamps to [1, 1000] and persists on the session.
+            arg = command.partition(" ")[2].strip()
+            current = getattr(session, "max_tool_iterations", 50)
+            if not arg:
+                return (
+                    f"Current tool-call iteration cap: {current} per turn "
+                    "(use /max-iterations <N> to set)"
+                )
+            try:
+                new_cap = int(arg)
+            except ValueError:
+                return f"❌ Invalid value: {arg!r} — must be an integer"
+            await self.set_config_option(
+                "max_tool_iterations", session.id, str(new_cap)
+            )
+            actual = session.max_tool_iterations
+            return f"✅ Tool-call iteration cap: {current} → {actual} per turn"
 
         if command == "/compact" or command.startswith("/compact "):
             focus = command.partition(" ")[2].strip()
@@ -5108,7 +5137,8 @@ class GlmAcpAgent(acp.Agent):
         else:
             return (
                 f"Unknown command: {command}\nAvailable commands: /compact, "
-                "/help, /clear-plan, /clear-history, /diff, /export, /status, /usage, /memory, "
+                "/help, /clear-plan, /clear-history, /diff, /export, /status, /usage, "
+                "/max-iterations, /memory, "
                 "/awareness, /metacognition, /deliberation, /repository, /meta-learning, "
                 "/skills, /profile, /curator, /sessions"
                 ", /lineage, /goal, /subgoal"
