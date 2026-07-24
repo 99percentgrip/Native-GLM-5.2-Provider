@@ -513,10 +513,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v2.0.6` before running the Unix
-installer, or pass `-Version v2.0.6` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v2.0.7` before running the Unix
+installer, or pass `-Version v2.0.7` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v2.0.6](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.6).
+[v2.0.7](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.7).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -578,6 +578,50 @@ uv pip install -e .
 > the venv's `site-packages`.
 
 Get your API key at https://z.ai/
+
+### Linux clipboard dependencies
+
+The standalone TUI reads and writes the OS clipboard through small,
+credential-safe helper binaries (no shell, no API key in their environment,
+one-second timeout, one-million-character bound). On Linux these helpers
+are not bundled with the OS — you need to install them once before
+`Ctrl+Shift+V` (paste into the composer) and `Ctrl+Y` (copy last response)
+work. Without them the clipboard shortcuts fail silently.
+
+Open a normal terminal **outside** the TUI and run the command for your
+display server and distribution:
+
+**X11** (most standard Linux setups):
+
+| Distro | Command |
+| --- | --- |
+| Debian / Ubuntu / Mint | `sudo apt install xclip xsel` |
+| Fedora / RHEL / Rocky | `sudo dnf install xclip xsel` |
+| Arch / Manjaro | `sudo pacman -S xclip xsel` |
+| openSUSE | `sudo zypper install xclip xsel` |
+
+**Wayland** (modern GNOME/KDE/Fedora/Silverblue defaults — install
+`wl-clipboard` instead of, or in addition to, the X11 tools):
+
+| Distro | Command |
+| --- | --- |
+| Debian / Ubuntu / Mint | `sudo apt install wl-clipboard` |
+| Fedora / RHEL / Rocky | `sudo dnf install wl-clipboard` |
+| Arch / Manjaro | `sudo pacman -S wl-clipboard` |
+| openSUSE | `sudo zypper install wl-clipboard` |
+
+The TUI auto-detects Wayland via `$WAYLAND_DISPLAY` and prefers `wl-copy` /
+`wl-paste` when set, otherwise it falls back to `xclip` then `xsel`.
+macOS uses the built-in `pbcopy` / `pbpaste`; Windows uses the built-in
+PowerShell `Get-Clipboard` / `Set-Clipboard` (or `clip.exe`). No extra
+install is needed on macOS or Windows.
+
+> 💡 The native terminal mouse mode toggle (`F7` or `/native-mouse`,
+> see [Standalone terminal agent](#standalone-terminal-agent)) hands
+> right-click and click-drag selection back to the terminal emulator
+> itself, which copies through the terminal's own clipboard path and
+> does **not** require these tools. Install them if you want the
+> in-TUI `Ctrl+Shift+V` and `Ctrl+Y` shortcuts to also work.
 
 ## Standalone terminal agent
 
@@ -980,7 +1024,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-2.0.6.dist-info  (and editable-install metadata)
+# expect: glm_acp-2.0.7.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials
