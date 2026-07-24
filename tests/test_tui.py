@@ -295,6 +295,202 @@ def test_system_clipboard_reader_does_not_inherit_credentials(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tui_context_menu_opens_via_keyboard_and_lists_composer_actions(tmp_path):
+    """F6 / Ctrl+Right Click should open a Codex-style dropdown menu."""
+    from glm_acp.tui import ContextMenuScreen
+
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        composer = app.query_one("#composer", Input)
+        composer.focus()
+        await pilot.pause()
+
+        # Keyboard fallback (F6). Ctrl+M is Enter in terminals.
+        await pilot.press("f6")
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert len(modal) == 1, "F6 should open the context menu"
+        option_list = modal[0].query_one("#ctx-list", OptionList)
+        labels = [opt.prompt for opt in option_list._options]
+        # Composer-focused menu offers Cut / Copy / Paste / Select All.
+        assert any("Cut" in lab for lab in labels)
+        assert any("Copy" in lab and "last" not in lab.lower() for lab in labels)
+        assert any("Paste" in lab for lab in labels)
+        assert any("Select all" in lab for lab in labels)
+        # Close the menu.
+        await pilot.press("escape")
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert len(modal) == 0
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_context_menu_opens_on_ctrl_right_click(tmp_path):
+    """Ctrl+Right Click (button==2, ctrl=True) opens the context menu.
+
+    ``pilot.click`` only simulates left clicks, so we synthesize a ``Click``
+    event with ``button == 2`` and ``ctrl == True`` to mirror SGR-encoded
+    right-clicks delivered by real terminals in mouse mode.
+    """
+    from glm_acp.tui import ContextMenuScreen
+
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+
+        # Plain left click must not open the menu.
+        plain_click = events.Click(
+            widget=None,
+            x=2,
+            y=2,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+        )
+        app.on_click(plain_click)
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert len(modal) == 0, "plain left-click should NOT open the menu"
+
+        # Ctrl+Right Click (button==2) on the transcript opens it.
+        transcript = app.query_one("#transcript")
+        ctrl_right_click = events.Click(
+            widget=transcript,
+            x=2,
+            y=2,
+            delta_x=0,
+            delta_y=0,
+            button=2,
+            shift=False,
+            meta=False,
+            ctrl=True,
+        )
+        app.on_click(ctrl_right_click)
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert len(modal) == 1, "Ctrl+Right Click should open the context menu"
+        option_list = modal[0].query_one("#ctx-list", OptionList)
+        labels = [opt.prompt for opt in option_list._options]
+        # Transcript-context menu offers Copy selection + copy last/all.
+        assert any("Copy selection" in lab for lab in labels)
+        assert any("Copy last" in lab for lab in labels)
+
+        # Shift+Right Click (button==2, shift=True) is also a valid trigger.
+        await pilot.press("escape")
+        await pilot.pause()
+        shift_right_click = events.Click(
+            widget=transcript,
+            x=2,
+            y=2,
+            delta_x=0,
+            delta_y=0,
+            button=2,
+            shift=True,
+            meta=False,
+            ctrl=False,
+        )
+        app.on_click(shift_right_click)
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert len(modal) == 1, "Shift+Right Click should open the context menu"
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_context_menu_copy_composer_dispatches_to_clipboard(tmp_path, monkeypatch):
+    """Selecting the Copy entry in the composer menu writes the composer text."""
+    from glm_acp.tui import ContextMenuScreen
+
+    captured_text = {}
+
+    def fake_write(text: str) -> bool:
+        captured_text["value"] = text
+        return True
+
+    monkeypatch.setattr("glm_acp.tui._write_system_clipboard", fake_write)
+
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        composer = app.query_one("#composer", Input)
+        composer.focus()
+        await pilot.pause()
+        composer.value = "hello-from-composer"
+        await pilot.pause()
+
+        await pilot.press("f6")
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert modal
+        option_list = modal[0].query_one("#ctx-list", OptionList)
+        # Find the Copy entry (first runnable option after Cut).
+        for index, opt in enumerate(option_list._options):
+            if opt.id == "copy_composer":
+                option_list.highlighted = index
+                break
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert captured_text.get("value") == "hello-from-composer"
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_context_menu_select_all_output_invokes_screen_text_select_all(
+    tmp_path, monkeypatch
+):
+    """The Select all output menu entry calls the screen selection API."""
+    from glm_acp.tui import ContextMenuScreen
+
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    called = {"count": 0}
+
+    def fake_select_all():
+        called["count"] += 1
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        # Capture the main screen reference and patch it before the modal
+        # is pushed — the callback runs after the modal is dismissed, at
+        # which point ``app.screen`` is the main screen again.
+        main_screen = app.screen
+        monkeypatch.setattr(main_screen, "text_select_all", fake_select_all)
+        # Defocus the composer so we get the transcript-context menu.
+        composer = app.query_one("#composer", Input)
+        composer.disabled = True  # force non-composer focus state
+        await pilot.pause()
+
+        app.action_open_context_menu()
+        await pilot.pause()
+        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
+        assert modal
+        option_list = modal[0].query_one("#ctx-list", OptionList)
+        # Highlight the select_all_output entry.
+        for index, opt in enumerate(option_list._options):
+            if opt.id == "select_all_output":
+                option_list.highlighted = index
+                break
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert called["count"] == 1
+        app.exit(0)
+
+
+@pytest.mark.asyncio
 async def test_tui_activity_line_animates_runtime_states_and_returns_ready(tmp_path):
     agent = SlowAgent()
     app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)

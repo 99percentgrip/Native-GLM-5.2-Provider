@@ -20,7 +20,7 @@ from a terminal with `glm-acp chat`—Zed is optional.
 - **Structured context compaction** — preserves plans, edits, verification evidence, and an optional user focus
 - **Context-pressure diagnostics** — one-time 60%/75%/85% warnings explain when compaction approaches
 - **Persistent session lineage** — conversations survive restarts; forks retain parent/root rollback paths
-- **Standalone full-screen TUI** — `glm-acp chat` provides conversation, reasoning, tool, plan, usage, approval, and live settings panels over the same sessions, tools, MCP, browser, workers, learning, awareness, and verification runtime as ACP editors; includes push-to-talk voice (F5, local Whisper), prompt queue (type ahead during work), four-view working-tree panel (F4), opt-in notification sounds, and smart desktop notifications
+- **Standalone full-screen TUI** — `glm-acp chat` provides conversation, reasoning, tool, plan, usage, approval, and live settings panels over the same sessions, tools, MCP, browser, workers, learning, awareness, and verification runtime as ACP editors; includes push-to-talk voice (F5, local Whisper), prompt queue (type ahead during work), four-view working-tree panel (F4), Codex-style right-click context menu (Ctrl+Right Click / Shift+Right Click / F6 with Cut/Copy/Paste/Select All), opt-in notification sounds, and smart desktop notifications
 - **Persistent goals and criteria** — `/goal` plus `/subgoal` continue across restarts and use a bounded auxiliary completion judge
 - **Inspectable awareness** — typed evidence-backed observations, assumptions, hypotheses, contradictions, unknowns, and capability limits with edit-aware freshness and completion certificates
 - **Adaptive metacognitive control** — separates six uncertainty classes, selects direct/grounded/deliberate/high-assurance posture, and learns only from redacted aggregate outcomes
@@ -513,10 +513,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v2.0.2` before running the Unix
-installer, or pass `-Version v2.0.2` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v2.0.3` before running the Unix
+installer, or pass `-Version v2.0.3` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v2.0.2](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.2).
+[v2.0.3](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.3).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -663,6 +663,21 @@ voice recording. **Smart desktop notifications** fire only for turns exceeding
 10 seconds, are rate-limited to one per 30 seconds, and use `notify-send`
 (Linux), `osascript` (macOS), or PowerShell (Windows). Disable with
 `GLM_ACP_NOTIFY=0`.
+
+**Codex-style right-click context menu** opens with **Ctrl+Right Click**
+(or **Shift+Right Click** as a terminal-friendly fallback when the terminal
+emulator intercepts Ctrl+Click, or **F6** as a pure-keyboard fallback) and
+offers keyboard-navigable actions for the focused area:
+
+| Area | Menu entries |
+| --- | --- |
+| Composer | Cut · Copy · Paste from clipboard · Select all · Copy last response · Copy all responses |
+| Transcript | Copy selection · Select all output · Copy last response · Copy all responses · Paste to composer |
+
+In addition, **Ctrl+Shift+C** copies the current Textual text selection and
+**Ctrl+Y** copies the most recent agent response, both via credential-safe OS
+clipboard helpers (`xclip`/`xsel`/`pbcopy`/`clip.exe`) with a
+one-million-character bound.
 
 Agent output is rendered as **structured Markdown** — headers, bullet points,
 numbered lists, code blocks with syntax highlighting, and bold emphasis — with
@@ -958,7 +973,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-2.0.2.dist-info  (and editable-install metadata)
+# expect: glm_acp-2.0.3.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials

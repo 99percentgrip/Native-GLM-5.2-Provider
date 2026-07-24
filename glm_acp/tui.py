@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.selection import Selection
 from textual.timer import Timer
 from textual.widgets import (
     Button,
@@ -484,6 +485,145 @@ class SettingsScreen(ModalScreen[dict[str, str] | None]):
         thought_select.value = current if current in levels else "enabled"
 
 
+class ContextMenuOption(Option):
+    """A context-menu entry: ``id`` carries the action identifier."""
+
+    def __init__(self, label: str, action_id: str | None, *, disabled: bool = False) -> None:
+        super().__init__(label, id=action_id, disabled=disabled)
+
+
+class ContextMenuScreen(ModalScreen[str | None]):
+    """Codex-style right-click dropdown menu.
+
+    A keyboard-navigable popup that surfaces Copy / Cut / Paste / Select All
+    and the response-copy commands. Opens on Ctrl+Right Click (primary,
+    matching Codex), Shift+Right Click (terminal-friendly fallback), or
+    Ctrl+M (keybinding fallback). The chosen action id is returned via
+    :py:meth:`dismiss`.
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_menu", show=False),
+        Binding("up", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
+        Binding("home", "cursor_top", show=False),
+        Binding("end", "cursor_bottom", show=False),
+        Binding("enter", "select_current", show=False),
+    ]
+
+    CSS = """
+    ContextMenuScreen { align: center middle; }
+    #ctx-menu {
+        width: 46; max-height: 70%; border: round #36a3f7;
+        background: #0e1620; padding: 0;
+    }
+    #ctx-title {
+        padding: 0 1; background: #1a2838; color: #d9e7f5;
+        text-style: bold;
+    }
+    #ctx-list { padding: 0; scrollbar-size: 0 0; }
+    #ctx-list > .option-list--option { padding: 0 1; }
+    #ctx-hint {
+        padding: 0 1; background: #111a24; color: #7f96ab;
+    }
+    """
+
+    def __init__(self, options: list[tuple[str, str | None]]) -> None:
+        super().__init__()
+        self._options = options  # (label, action_id); None id => separator/dismiss
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ctx-menu"):
+            yield Static("Context menu", id="ctx-title", markup=False)
+            yield OptionList(
+                *[
+                    ContextMenuOption(label, action_id, disabled=(action_id is None))
+                    for label, action_id in self._options
+                ],
+                id="ctx-list",
+            )
+            yield Static(
+                "↑↓ move  ·  Enter run  ·  Esc close",
+                id="ctx-hint",
+                markup=False,
+            )
+
+    def on_mount(self) -> None:
+        # Children mount asynchronously; defer highlight to the next refresh
+        # so ``query_one("#ctx-list")`` resolves after compose().
+        self.call_after_refresh(self._highlight_first_runnable)
+
+    def _highlight_first_runnable(self) -> None:
+        try:
+            option_list = self.query_one("#ctx-list", OptionList)
+        except Exception:
+            return
+        for index, (_, action_id) in enumerate(self._options):
+            if action_id is not None:
+                option_list.highlighted = index
+                return
+
+    def action_cursor_up(self) -> None:
+        option_list = self.query_one("#ctx-list", OptionList)
+        index = option_list.highlighted
+        if index is None:
+            index = 0
+        else:
+            index = max(0, index - 1)
+        # Skip separator rows.
+        while index > 0 and self._options[index][1] is None:
+            index -= 1
+        option_list.highlighted = index
+
+    def action_cursor_down(self) -> None:
+        option_list = self.query_one("#ctx-list", OptionList)
+        index = option_list.highlighted
+        if index is None:
+            index = 0
+        else:
+            index = min(len(self._options) - 1, index + 1)
+        # Skip separator rows.
+        while index < len(self._options) - 1 and self._options[index][1] is None:
+            index += 1
+        option_list.highlighted = index
+
+    def action_cursor_top(self) -> None:
+        for index, (_, action_id) in enumerate(self._options):
+            if action_id is not None:
+                self.query_one("#ctx-list", OptionList).highlighted = index
+                return
+
+    def action_cursor_bottom(self) -> None:
+        for index in range(len(self._options) - 1, -1, -1):
+            if self._options[index][1] is not None:
+                self.query_one("#ctx-list", OptionList).highlighted = index
+                return
+
+    def action_select_current(self) -> None:
+        option_list = self.query_one("#ctx-list", OptionList)
+        index = option_list.highlighted
+        if index is None:
+            self.dismiss(None)
+            return
+        action_id = self._options[index][1]
+        self.dismiss(action_id)
+
+    @on(OptionList.OptionSelected, "#ctx-list")
+    def option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Forward Enter / double-click selection to the action dispatcher."""
+        event.stop()
+        option_list = self.query_one("#ctx-list", OptionList)
+        index = option_list.highlighted
+        if index is None:
+            self.dismiss(None)
+            return
+        action_id = self._options[index][1]
+        self.dismiss(action_id)
+
+    def action_dismiss_menu(self) -> None:
+        self.dismiss(None)
+
+
 class TuiClient:
     """ACP Client adapter that maps updates to Textual widgets."""
 
@@ -554,6 +694,11 @@ class NativeGlmTui(App[int]):
         Binding("f5", "toggle_voice", "Push to talk", priority=True),
         Binding("ctrl+y", "copy_last_response", "Copy response", priority=True),
         Binding("ctrl+shift+c", "copy_selection", "Copy selection", show=False, priority=True),
+        # Codex-style right-click context menu.
+        # Ctrl+Right Click is the primary trigger; F6 is the keyboard
+        # fallback for terminals that bind Ctrl+Click at the OS level
+        # (Ctrl+M is the same byte as Enter in terminals and would submit).
+        Binding("f6", "open_context_menu", "Context menu", show=False, priority=True),
     ]
 
     CSS = """
@@ -1799,6 +1944,150 @@ class NativeGlmTui(App[int]):
             self.notify(f"Copied {len(responses)} responses to clipboard", severity="success")
         else:
             self.notify("Clipboard unavailable", severity="warning")
+
+    # ------------------------------------------------------------------
+    # Codex-style right-click context menu (Ctrl+Right Click / Shift+Right
+    # Click / Ctrl+M keyboard fallback). Provides Copy / Cut / Paste /
+    # Select All for the composer and Copy selection / Copy last response /
+    # Copy all responses / Select all output for the transcript area.
+    # ------------------------------------------------------------------
+
+    def on_click(self, event: events.Click) -> None:
+        """Pop a Codex-style dropdown menu on Ctrl+Right Click or Shift+Right Click.
+
+        ``button == 2`` is the right mouse button in Textual's SGR encoding.
+        Many Linux terminals bind Ctrl+Click to native actions (open link,
+        terminal menu) that swallow the event before Textual receives it,
+        so Shift+Right Click is accepted as a terminal-friendly fallback
+        and F6 is exposed as a pure-keyboard alternative.
+        """
+        if event.button != 2:
+            return
+        if not (event.ctrl or event.shift):
+            return
+        event.stop()
+        event.prevent_default()
+        # event.widget is the widget under the cursor (set by Textual during
+        # event dispatch). When it is the composer (or a descendant), offer
+        # Cut/Copy/Paste/Select All; otherwise offer the transcript-context
+        # Copy selection / Copy last response / Copy all / Select all output.
+        self._open_context_menu(clicked_widget=event.widget)
+
+    def action_open_context_menu(self) -> None:
+        """F6: keyboard fallback to open the right-click context menu."""
+        self._open_context_menu(clicked_widget=None)
+
+    def _open_context_menu(self, clicked_widget: Any = None) -> None:
+        composer = self.query_one("#composer", CommandInput)
+        if clicked_widget is not None:
+            composer_clicked = (
+                clicked_widget is composer or composer in clicked_widget.ancestors_with_self
+            )
+        else:
+            # Keyboard (F6) path: fall back to the currently focused widget.
+            composer_clicked = self.focused is composer
+        if composer_clicked:
+            options: list[tuple[str, str | None]] = [
+                ("✂   Cut", "cut_composer"),
+                ("⧉   Copy", "copy_composer"),
+                ("⎘   Paste from clipboard", "paste"),
+                ("▭   Select all", "select_all_composer"),
+                ("────────────────────────────", None),
+                ("⧉   Copy last response", "copy_last"),
+                ("⧉   Copy all responses", "copy_all"),
+                ("────────────────────────────", None),
+                ("✕   Close menu", None),
+            ]
+        else:
+            options = [
+                ("⧉   Copy selection", "copy_selection"),
+                ("▭   Select all output", "select_all_output"),
+                ("⧉   Copy last response", "copy_last"),
+                ("⧉   Copy all responses", "copy_all"),
+                ("⎘   Paste to composer", "paste"),
+                ("────────────────────────────", None),
+                ("✕   Close menu", None),
+            ]
+        self.push_screen(ContextMenuScreen(options), self._context_menu_callback)
+
+    def _context_menu_callback(self, action: str | None) -> None:
+        if action is None:
+            return
+        sync_handlers: dict[str, Callable[[], Any]] = {
+            "select_all_output": self.action_select_all_output,
+            "paste": self.action_paste_to_composer,
+            "cut_composer": self.action_cut_composer,
+            "copy_composer": self.action_copy_composer,
+            "select_all_composer": self.action_select_all_composer,
+        }
+        async_handlers: dict[str, Callable[[], Awaitable[Any]]] = {
+            "copy_selection": self.action_copy_selection,
+            "copy_last": self.action_copy_last_response,
+            "copy_all": self._copy_all_responses,
+        }
+        if action in async_handlers:
+            self.run_worker(async_handlers[action](), exclusive=True, group="ctx-menu")
+        elif action in sync_handlers:
+            sync_handlers[action]()
+
+    def action_select_all_output(self) -> None:
+        """Highlight all text in the transcript for a subsequent Copy."""
+        try:
+            self.screen.text_select_all()
+        except Exception:
+            self.notify("Selection is unavailable in this terminal", severity="warning")
+            return
+        self.notify(
+            "Selected all output — press Ctrl+Shift+C or open the menu again to copy",
+            severity="information",
+        )
+
+    def action_paste_to_composer(self) -> None:
+        """Paste the OS clipboard into the composer (used by the context menu)."""
+        composer = self.query_one("#composer", CommandInput)
+        composer.focus()
+        text = _read_system_clipboard() or self.app.clipboard
+        if not text:
+            self.notify("Clipboard is empty or unavailable", severity="warning")
+            return
+        composer._apply_clipboard_text(text)
+        self.notify(f"Pasted {len(text)} characters", severity="success")
+
+    def action_cut_composer(self) -> None:
+        """Cut the composer selection to the OS clipboard."""
+        composer = self.query_one("#composer", CommandInput)
+        composer.focus()
+        selected = composer.selected_text
+        if not selected:
+            self.notify("No text selected in composer", severity="information")
+            return
+        if not _write_system_clipboard(selected):
+            self.notify("Clipboard unavailable (install xclip or xsel)", severity="warning")
+            return
+        composer.delete_selection()
+        self.notify(f"Cut {len(selected)} characters", severity="success")
+
+    def action_copy_composer(self) -> None:
+        """Copy the composer selection (or whole line if none) to the clipboard."""
+        composer = self.query_one("#composer", CommandInput)
+        composer.focus()
+        selected = composer.selected_text or composer.value
+        if not selected:
+            self.notify("Nothing to copy", severity="information")
+            return
+        if _write_system_clipboard(selected):
+            self.notify(f"Copied {len(selected)} characters", severity="success")
+        else:
+            self.notify("Clipboard unavailable (install xclip or xsel)", severity="warning")
+
+    def action_select_all_composer(self) -> None:
+        """Select all text in the composer."""
+        composer = self.query_one("#composer", CommandInput)
+        composer.focus()
+        composer.selection = Selection.from_offsets(
+            (0, 0), (0, len(composer.value))
+        )
+        self.notify("Selected all text in composer", severity="information")
 
     async def _export_last_response(self) -> None:
         """Export the last agent response to a timestamped Markdown file."""
