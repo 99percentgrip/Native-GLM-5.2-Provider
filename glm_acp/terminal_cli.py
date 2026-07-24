@@ -306,6 +306,49 @@ async def _handle_plain_command(
             await agent.set_session_mode(mode_id="plan", session_id=session_id)
             print("Plan Mode activated — read-only research mode", file=sys.stderr)
             return prd  # the PRD becomes the next prompt
+    # UX safeguard: catch the common "forgot the leading slash" typo. If the
+    # user typed a known command name without ``/`` (e.g. ``max-iterations 200``
+    # instead of ``/max-iterations 200``), show a short hint instead of
+    # silently sending the text to the model as a chat prompt.
+    suggestion = _suggest_command_if_close(stripped)
+    if suggestion is not None:
+        print(suggestion, file=sys.stderr)
+        return "skip"
+    return None
+
+
+# Known plain-mode commands, used for the "did you mean?" typo hint.
+_PLAIN_COMMAND_NAMES = (
+    "/exit",
+    "/quit",
+    "/image",
+    "/help",
+    "/max-iterations",
+    "/planmode",
+)
+
+
+def _suggest_command_if_close(text: str) -> str | None:
+    """Return a ``did you mean?`` hint if ``text`` looks like a command
+    that's missing its leading slash, else ``None``.
+
+    Triggers on inputs that start with one of the known command names
+    (with or without a leading slash, with or without arguments):
+    ``max-iterations 200`` → hint to use ``/max-iterations 200``
+    ``planmode build me an app`` → hint to use ``/planmode build me an app``
+    ``help`` → hint to use ``/help``
+    """
+    if not text or text.startswith("/"):
+        return None
+    # Normalize: strip a stray leading slash if the user typed two, etc.
+    first_word = text.split(None, 1)[0].lower()
+    for name in _PLAIN_COMMAND_NAMES:
+        bare = name.lstrip("/").lower()
+        if first_word == bare:
+            return (
+                f"Unknown input. Did you mean '{name}'? "
+                "(commands must start with a leading '/')."
+            )
     return None
 
 

@@ -268,3 +268,58 @@ async def test_handle_plain_command_non_command_returns_none():
         pending_images=[],
     )
     assert decision is None
+
+
+def test_suggest_command_catches_missing_slash(capsys):
+    """Typing a known command without the leading slash gets a hint, not a silent chat.
+
+    Regression for: ``max-iterations 200`` (no slash) was silently sent to
+    the model as a prompt. The user expected the slash command to fire.
+    """
+    from glm_acp.terminal_cli import _suggest_command_if_close
+
+    # Without slash, with arg → suggest the slash version
+    assert _suggest_command_if_close("max-iterations 200") is not None
+    assert "/max-iterations" in _suggest_command_if_close("max-iterations 200")
+    # Without slash, no arg → also suggested
+    assert "/help" in _suggest_command_if_close("help")
+    assert "/planmode" in _suggest_command_if_close("planmode build an app")
+    assert "/image" in _suggest_command_if_close("image /tmp/foo.png")
+    assert "/exit" in _suggest_command_if_close("exit")
+    assert "/quit" in _suggest_command_if_close("quit")
+
+    # Case-insensitive
+    assert "/max-iterations" in _suggest_command_if_close("MAX-ITERATIONS 200")
+    assert "/help" in _suggest_command_if_close("HELP")
+
+    # Properly formed commands (with slash) are NOT flagged
+    assert _suggest_command_if_close("/max-iterations 200") is None
+    assert _suggest_command_if_close("/help") is None
+    assert _suggest_command_if_close("/exit") is None
+
+    # Plain chat text is NOT flagged (would be sent to the model as-is)
+    assert _suggest_command_if_close("hello world") is None
+    assert _suggest_command_if_close("write me a Python function") is None
+    assert _suggest_command_if_close("") is None
+
+
+@pytest.mark.asyncio
+async def test_handle_plain_command_typo_suggests_slash(capsys):
+    """``max-iterations 200`` (no slash) prints a hint and skips model submission."""
+    from glm_acp.terminal_cli import _handle_plain_command
+
+    class FailingAgent:
+        async def prompt(self, *args, **kwargs):
+            raise AssertionError("must not be called for typo'd command")
+
+    decision = await _handle_plain_command(
+        "max-iterations 200",
+        agent=FailingAgent(),
+        session_id="s",
+        session=None,
+        pending_images=[],
+    )
+    assert decision == "skip"
+    captured = capsys.readouterr()
+    assert "/max-iterations" in captured.err
+    assert "leading" in captured.err.lower()
