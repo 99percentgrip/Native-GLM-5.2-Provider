@@ -451,6 +451,8 @@ async def test_tui_context_menu_select_all_output_invokes_screen_text_select_all
     tmp_path, monkeypatch
 ):
     """The Select all output menu entry calls the screen selection API."""
+    from textual.screen import Screen
+
     from glm_acp.tui import ContextMenuScreen
 
     agent = FakeAgent()
@@ -458,16 +460,17 @@ async def test_tui_context_menu_select_all_output_invokes_screen_text_select_all
 
     called = {"count": 0}
 
-    def fake_select_all():
+    def fake_select_all(self_):
         called["count"] += 1
+
+    # Patch the class method so it works regardless of which Screen
+    # instance is current when the modal-callback path runs (the captured
+    # main-screen instance may differ from the post-dismiss ``app.screen``
+    # on Windows / non-Linux CI runners).
+    monkeypatch.setattr(Screen, "text_select_all", fake_select_all)
 
     async with app.run_test(size=(120, 40)) as pilot:
         await _wait_for_agent_ready(app, pilot)
-        # Capture the main screen reference and patch it before the modal
-        # is pushed — the callback runs after the modal is dismissed, at
-        # which point ``app.screen`` is the main screen again.
-        main_screen = app.screen
-        monkeypatch.setattr(main_screen, "text_select_all", fake_select_all)
         # Defocus the composer so we get the transcript-context menu.
         composer = app.query_one("#composer", Input)
         composer.disabled = True  # force non-composer focus state
