@@ -513,10 +513,10 @@ checksum, install without administrator privileges, and expose both `glm-acp`
 and `native-glm-acp`. No Python or Node.js runtime is required. Open a new
 terminal after installation if `glm-acp` is not immediately found.
 
-To pin a release, set `GLM_ACP_VERSION=v1.9.9` before running the Unix
-installer, or pass `-Version v1.9.9` to the downloaded PowerShell script.
+To pin a release, set `GLM_ACP_VERSION=v2.0.0` before running the Unix
+installer, or pass `-Version v2.0.0` to the downloaded PowerShell script.
 The current release and manual-download fallback is
-[v1.9.9](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v1.9.9).
+[v2.0.0](https://github.com/99percentgrip/Native-GLM-ACP/releases/tag/v2.0.0).
 
 The setup prompts without echoing the API key and stores it in a user-only
 configuration file. You can also keep using `ZAI_API_KEY` or `Z_AI_API_KEY`;
@@ -958,7 +958,7 @@ You can confirm it's installed by checking for the editable finder:
 
 ```bash
 ls .venv/lib/*/site-packages/ | grep glm_acp
-# expect: glm_acp-1.9.9.dist-info  (and editable-install metadata)
+# expect: glm_acp-2.0.0.dist-info  (and editable-install metadata)
 ```
 
 ### Agent reports missing API credentials

@@ -219,6 +219,52 @@ Loaded project instructions and opt-in memory:
 """
 
 
+PLAN_MODE_PROMPT = """\
+
+# PLAN MODE ACTIVE — Principal Software Architect
+
+You are now operating in PLAN MODE. You are a Principal Software Architect. \
+Your objective is NOT to write production code or execute tasks. Your sole \
+objective is to research, interrogate the user's requirements, analyze the \
+existing codebase, and output a foolproof, edge-case-tested Master Plan.
+
+## MODE CONSTRAINTS
+- **READ-ONLY:** You are strictly forbidden from writing code, modifying files, \
+or running destructive commands. You CAN read files, search code, use web search, \
+and write ONLY to `.agent/plan.md`.
+- **NO ASSUMPTIONS:** Do not guess how the user's current architecture works. \
+If you need to know, use your read tools to look at the codebase.
+- **NO HALLUCINATIONS:** Use the `web_search` tool to verify the latest syntax \
+and best practices for the requested technologies before finalizing the plan.
+
+## YOUR WORKFLOW (execute in order)
+
+### Phase 1: Reconnaissance
+1. Read the user's PRD or request.
+2. Identify the core technologies, APIs, or frameworks required.
+3. Use `web_search` to find the latest documentation and breaking changes.
+4. Use `read_file`, `list_directory`, and `search_files` to explore the existing \
+codebase. Identify existing patterns (routing, state, database, auth, etc.).
+
+### Phase 2: The Interrogation
+1. Compare the PRD against your research and codebase findings.
+2. Identify gaps, missing edge cases, security considerations, or architectural \
+misalignments.
+3. PAUSE and ask the user 2 to 4 highly specific, technical questions.
+4. Do NOT proceed to Phase 3 until the user answers.
+
+### Phase 3: The Master Artifact
+Once the user clarifies, generate the plan and write it to `.agent/plan.md`:
+1. Architecture and data flow (how it integrates with the existing system).
+2. Step-by-step implementation (exact files to modify/create/delete).
+3. Dependencies and environment changes required.
+4. Verification steps (how to test success).
+
+After writing the plan, tell the user: "Plan saved to [.agent/plan.md](file:///.agent/plan.md). \
+Type `approve` to begin execution, or edit the file directly."
+"""
+
+
 def build_system_prompt(
     cwd: str,
     model: str = DEFAULT_MODEL,
@@ -263,6 +309,14 @@ MODE_LIST = [
     ),
     SessionMode(
         id="code", name="Code", description="Full access: read, write, edit, and run commands"
+    ),
+    SessionMode(
+        id="plan",
+        name="Plan",
+        description=(
+            "Read-only reconnaissance and planning: research, interrogate, "
+            "and write a master plan to .agent/plan.md — type 'approve' to execute"
+        ),
     ),
 ]
 
@@ -374,6 +428,8 @@ class Session:
         content = build_system_prompt(
             self.cwd, self.model, self.task_context, self.instruction_targets
         )
+        if self.mode == "plan":
+            content += "\n\n" + PLAN_MODE_PROMPT
         if self.goal:
             criteria = (
                 "\n".join(f"{index}. {value}" for index, value in enumerate(self.subgoals, 1))
@@ -1839,6 +1895,32 @@ class GlmAcpAgent(acp.Agent):
             if response:
                 await self._send_message(session.id, f"\n\n{response}\n")
             return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
+
+        # --- Approve plan ---
+        if stripped.lower() in {"approve", "approve plan"} and session.mode == "plan":
+            await self._send_user_message(session.id, stripped)
+            session.mode = "code"
+            session.refresh_system_prompt()
+            await self._save_session(session)
+            await self._conn.session_update(
+                session_id=session.id,
+                update=acp.update_current_mode(current_mode_id="code"),
+            )
+            plan_path = Path(session.cwd) / ".agent" / "plan.md"
+            if plan_path.exists():
+                plan_text = plan_path.read_text(encoding="utf-8")[:8000]
+                content = (
+                    "The user approved the plan. Switch to Code mode and execute "
+                    "the following approved plan step by step:\n\n" + plan_text
+                )
+            else:
+                content = (
+                    "The user approved the plan. Switch to Code mode and begin "
+                    "implementation based on your earlier research and analysis."
+                )
+            await self._send_message(
+                session.id, "\n\n✅ **Plan approved.** Switching to Code mode.\n"
+            )
 
         # Guard: if content is empty/whitespace-only and there are no
         # images, don't send an empty message to the API.
@@ -3948,6 +4030,23 @@ class GlmAcpAgent(acp.Agent):
         force_ask = effect == "ask"
         if effect == "ask" and mode != "read":
             mode = "ask"
+
+        # "plan" — read-only with web research and plan artifact writes
+        if getattr(session, "mode", "") == "plan":
+            if not destructive:
+                return True, ""
+            if tool_name in ("mcp_call", "mcp_list_tools"):
+                return True, ""
+            if tool_name == "write_file":
+                path = str(tool_args.get("path", ""))
+                if ".agent/" in path or path.endswith(".agent/plan.md"):
+                    return True, ""
+            msg = (
+                f"Permission denied: '{tool_name}' is blocked in Plan Mode. "
+                f"Type 'approve' to switch to Code mode and execute the plan."
+            )
+            await self._send_message(session.id, f"\n\n📋 {msg}\n")
+            return False, msg
 
         # "bypass" — auto-approve everything
         if mode == "bypass":

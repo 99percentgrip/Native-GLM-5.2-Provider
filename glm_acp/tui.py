@@ -70,6 +70,7 @@ LOCAL_COMMANDS = {
     "/toggle-thinking": "Alias for /reasoning-panel",
     "/clear-view": "Clear only the visible transcript",
     "/copy": "Copy the last response to clipboard (or /copy <N> for response N, /copy all)",
+    "/planmode": "Activate Plan Mode with a PRD: /planmode <your requirements>",
     "/export last": "Export the last response to a Markdown file",
     "/image": "Queue an image for the next prompt",
     "/exit": "Close the terminal agent",
@@ -775,6 +776,16 @@ class NativeGlmTui(App[int]):
         if not text or not self._agent_ready:
             return
         event.input.clear()
+        if text.startswith("/planmode ") and self._agent_ready:
+            prd = text.partition(" ")[2].strip()
+            if prd:
+                await self.agent.set_session_mode(
+                    mode_id="plan", session_id=self.session_id
+                )
+                self.notify("Plan Mode activated — read-only research mode", severity="information")
+                text = prd
+            else:
+                return
         if await self._handle_local_command(text):
             return
         if text in {"/exit", "/quit"}:
