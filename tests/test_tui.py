@@ -330,197 +330,158 @@ async def test_tui_agent_response_is_selectable_after_richmarkdown_render(tmp_pa
         app.exit(0)
 
 
-@pytest.mark.asyncio
-async def test_tui_context_menu_opens_via_keyboard_and_lists_composer_actions(tmp_path):
-    """F6 / Ctrl+Right Click should open a Codex-style dropdown menu."""
-    from glm_acp.tui import ContextMenuScreen
+def test_selectable_static_strips_markdown_syntax_from_selection():
+    """Selection must return plain rendered text, not raw ``**bold**`` markers."""
+    from rich.markdown import Markdown as RichMarkdown
+    from textual.geometry import Offset
+    from textual.selection import Selection
 
-    agent = FakeAgent()
-    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+    from glm_acp.tui import SelectableStatic
 
-    async with app.run_test(size=(120, 40)) as pilot:
-        await _wait_for_agent_ready(app, pilot)
-        composer = app.query_one("#composer", Input)
-        composer.focus()
-        await pilot.pause()
+    widget = SelectableStatic(raw_text="Hello **world** and `code` here.")
+    widget.update(
+        RichMarkdown("Hello **world** and `code` here."),
+        raw_text="Hello **world** and `code` here.",
+    )
 
-        # Keyboard fallback (F6). Ctrl+M is Enter in terminals.
-        await pilot.press("f6")
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert len(modal) == 1, "F6 should open the context menu"
-        option_list = modal[0].query_one("#ctx-list", OptionList)
-        labels = [opt.prompt for opt in option_list._options]
-        # Composer-focused menu offers Cut / Copy / Paste / Select All.
-        assert any("Cut" in lab for lab in labels)
-        assert any("Copy" in lab and "last" not in lab.lower() for lab in labels)
-        assert any("Paste" in lab for lab in labels)
-        assert any("Select all" in lab for lab in labels)
-        # Close the menu.
-        await pilot.press("escape")
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert len(modal) == 0
-        app.exit(0)
+    # Plain-text rendering should strip markdown syntax.
+    assert "**" not in widget._selectable_plain_text
+    assert "code" in widget._selectable_plain_text
+    assert not any(
+        line.endswith(" ") and line.strip()
+        for line in widget._selectable_plain_text.splitlines()
+    ), "plain text should not have trailing whitespace on non-empty lines"
+
+    # Partial screen-coordinate selection should NOT return markdown garbage.
+    partial = Selection(start=Offset(5, 0), end=Offset(15, 0))
+    text, _ = widget.get_selection(partial)
+    assert "**" not in text
+    assert "Hello" in text or "world" in text
 
 
 @pytest.mark.asyncio
-async def test_tui_context_menu_opens_on_ctrl_right_click(tmp_path):
-    """Ctrl+Right Click (button==2, ctrl=True) opens the context menu.
-
-    ``pilot.click`` only simulates left clicks, so we synthesize a ``Click``
-    event with ``button == 2`` and ``ctrl == True`` to mirror SGR-encoded
-    right-clicks delivered by real terminals in mouse mode.
-    """
-    from glm_acp.tui import ContextMenuScreen
-
-    agent = FakeAgent()
-    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        await _wait_for_agent_ready(app, pilot)
-
-        # Plain left click must not open the menu.
-        plain_click = events.Click(
-            widget=None,
-            x=2,
-            y=2,
-            delta_x=0,
-            delta_y=0,
-            button=1,
-            shift=False,
-            meta=False,
-            ctrl=False,
-        )
-        app.on_click(plain_click)
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert len(modal) == 0, "plain left-click should NOT open the menu"
-
-        # Ctrl+Right Click (button==2) on the transcript opens it.
-        transcript = app.query_one("#transcript")
-        ctrl_right_click = events.Click(
-            widget=transcript,
-            x=2,
-            y=2,
-            delta_x=0,
-            delta_y=0,
-            button=2,
-            shift=False,
-            meta=False,
-            ctrl=True,
-        )
-        app.on_click(ctrl_right_click)
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert len(modal) == 1, "Ctrl+Right Click should open the context menu"
-        option_list = modal[0].query_one("#ctx-list", OptionList)
-        labels = [opt.prompt for opt in option_list._options]
-        # Transcript-context menu offers Copy selection + copy last/all.
-        assert any("Copy selection" in lab for lab in labels)
-        assert any("Copy last" in lab for lab in labels)
-
-        # Shift+Right Click (button==2, shift=True) is also a valid trigger.
-        await pilot.press("escape")
-        await pilot.pause()
-        shift_right_click = events.Click(
-            widget=transcript,
-            x=2,
-            y=2,
-            delta_x=0,
-            delta_y=0,
-            button=2,
-            shift=True,
-            meta=False,
-            ctrl=False,
-        )
-        app.on_click(shift_right_click)
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert len(modal) == 1, "Shift+Right Click should open the context menu"
-        app.exit(0)
-
-
-@pytest.mark.asyncio
-async def test_tui_context_menu_copy_composer_dispatches_to_clipboard(tmp_path, monkeypatch):
-    """Selecting the Copy entry in the composer menu writes the composer text."""
-    from glm_acp.tui import ContextMenuScreen
-
-    captured_text = {}
-
-    def fake_write(text: str) -> bool:
-        captured_text["value"] = text
-        return True
-
-    monkeypatch.setattr("glm_acp.tui._write_system_clipboard", fake_write)
-
-    agent = FakeAgent()
-    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        await _wait_for_agent_ready(app, pilot)
-        composer = app.query_one("#composer", Input)
-        composer.focus()
-        await pilot.pause()
-        composer.value = "hello-from-composer"
-        await pilot.pause()
-
-        await pilot.press("f6")
-        await pilot.pause()
-        modal = [s for s in app.screen_stack if isinstance(s, ContextMenuScreen)]
-        assert modal
-        option_list = modal[0].query_one("#ctx-list", OptionList)
-        # Find the Copy entry (first runnable option after Cut).
-        for index, opt in enumerate(option_list._options):
-            if opt.id == "copy_composer":
-                option_list.highlighted = index
-                break
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert captured_text.get("value") == "hello-from-composer"
-        app.exit(0)
-
-
-@pytest.mark.asyncio
-async def test_tui_context_menu_callback_dispatches_select_all_output(
+async def test_tui_native_mouse_toggle_calls_driver_disable_then_enable(
     tmp_path, monkeypatch
 ):
-    """The context menu callback routes ``select_all_output`` to the action.
+    """F7 / /native-mouse toggles driver mouse support.
 
-    Tests the dispatch table directly to keep the assertion OS-independent —
-    the surrounding UI flow (F6 / Ctrl+Right Click opening the menu, Enter
-    confirming the highlighted option) is covered by the other context-menu
-    tests. On Windows CI runners, ``pilot.press('enter')`` inside an
-    OptionList-bearing ModalScreen has slightly different timing, which makes
-    a full UI round-trip flaky.
+    The Codex/Claude-Code approach is to release mouse capture back to the
+    terminal emulator so the terminal's own right-click menu and click-drag
+    selection work natively. We inject fake escape-sequence writers onto
+    the (headless) test driver and verify the toggle is idempotent.
     """
-    from textual.screen import Screen
+    calls = {"disable": 0, "enable": 0}
+
+    def fake_disable():
+        calls["disable"] += 1
+
+    def fake_enable():
+        calls["enable"] += 1
 
     agent = FakeAgent()
     app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
 
-    called = {"count": 0}
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        driver = app._driver
+        assert driver is not None, "driver should be running"
+        # The real LinuxDriver / WindowsDriver expose these; the headless
+        # test driver does not, so inject them to mimic production behaviour.
+        monkeypatch.setattr(driver, "_disable_mouse_support", fake_disable, raising=False)
+        monkeypatch.setattr(driver, "_enable_mouse_support", fake_enable, raising=False)
 
-    def fake_select_all(self_):
-        called["count"] += 1
+        # F7 turns native mouse mode ON.
+        await pilot.press("f7")
+        await pilot.pause()
+        assert app._native_mouse_mode is True
+        assert calls["disable"] == 1
+        assert calls["enable"] == 0
 
-    monkeypatch.setattr(Screen, "text_select_all", fake_select_all)
+        # F7 again turns it OFF.
+        await pilot.press("f7")
+        await pilot.pause()
+        assert app._native_mouse_mode is False
+        assert calls["enable"] == 1
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_native_mouse_slash_command(tmp_path, monkeypatch):
+    """/native-mouse invokes the same toggle as F7 (works in any terminal)."""
+    calls = {"disable": 0}
+
+    def fake_disable():
+        calls["disable"] += 1
+
+    agent = FakeAgent()
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
 
     async with app.run_test(size=(120, 40)) as pilot:
         await _wait_for_agent_ready(app, pilot)
-        # Drive the dispatch table directly — mirrors what the menu's
-        # OptionSelected handler does after ``dismiss(action_id)``.
-        app._context_menu_callback("select_all_output")
-        await pilot.pause()
-        assert called["count"] == 1
+        driver = app._driver
+        monkeypatch.setattr(driver, "_disable_mouse_support", fake_disable, raising=False)
+        monkeypatch.setattr(driver, "_enable_mouse_support", lambda: None, raising=False)
 
-        # Defensive: ensure unknown / None actions don't raise.
-        app._context_menu_callback(None)
-        app._context_menu_callback("not_a_real_action")
+        handled = await app._handle_local_command("/native-mouse")
+        assert handled, "/native-mouse should be a recognized local command"
         await pilot.pause()
-        assert called["count"] == 1
+        assert app._native_mouse_mode is True
+        assert calls["disable"] == 1
         app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_native_mouse_env_var_auto_enables_on_mount(tmp_path, monkeypatch):
+    """GLM_ACP_NATIVE_MOUSE=1 starts the TUI with native mouse mode on."""
+    from textual.drivers.headless_driver import HeadlessDriver
+
+    calls = {"disable": 0}
+
+    def fake_disable(_self):
+        calls["disable"] += 1
+
+    # The fake methods must be installed on the driver class BEFORE the app
+    # starts, because ``on_mount`` schedules the toggle via
+    # ``call_after_refresh`` and it fires shortly after run_test begins —
+    # long before the test body would have a chance to inject them on the
+    # instance.
+    monkeypatch.setattr(HeadlessDriver, "_disable_mouse_support", fake_disable, raising=False)
+    monkeypatch.setattr(HeadlessDriver, "_enable_mouse_support", lambda _self: None, raising=False)
+
+    agent = FakeAgent()
+    monkeypatch.setenv("GLM_ACP_NATIVE_MOUSE", "1")
+    app = NativeGlmTui(_args(tmp_path), agent_factory=lambda: agent)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _wait_for_agent_ready(app, pilot)
+        # The mount hook schedules the toggle via call_after_refresh;
+        # let it land.
+        for _ in range(10):
+            await pilot.pause(0.05)
+        assert app._native_mouse_mode is True, "env var should auto-enable native mouse"
+        assert calls["disable"] == 1
+        app.exit(0)
+
+
+@pytest.mark.asyncio
+async def test_tui_no_custom_context_menu_class_remains():
+    """The Codex-style custom dropdown menu is gone.
+
+    The user's directive was to remove the custom context menu entirely
+    and instead release mouse capture back to the terminal. We assert that
+    the ContextMenuScreen and ContextMenuOption classes are no longer
+    importable from the module, and that no on_click right-click handler
+    remains on the App.
+    """
+    import glm_acp.tui as tui_mod
+
+    assert not hasattr(tui_mod, "ContextMenuScreen"), "custom menu screen must be removed"
+    assert not hasattr(tui_mod, "ContextMenuOption"), "custom menu option class must be removed"
+    # The App must not have a click handler that pops a menu.
+    assert not hasattr(tui_mod.NativeGlmTui, "on_click")
+    assert not hasattr(tui_mod.NativeGlmTui, "action_open_context_menu")
+    # But the native-mouse toggle must exist.
+    assert hasattr(tui_mod.NativeGlmTui, "action_toggle_native_mouse")
 
 
 @pytest.mark.asyncio

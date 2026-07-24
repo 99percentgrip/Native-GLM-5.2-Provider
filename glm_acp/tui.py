@@ -10,13 +10,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
 from acp.schema import AllowedOutcome, DeniedOutcome, RequestPermissionResponse
 from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
+from rich.style import Style
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -71,6 +72,7 @@ LOCAL_COMMANDS = {
     "/toggle-thinking": "Alias for /reasoning-panel",
     "/clear-view": "Clear only the visible transcript",
     "/copy": "Copy the last response to clipboard (or /copy <N> for response N, /copy all)",
+    "/native-mouse": "Toggle native terminal mouse mode (release TUI mouse capture)",
     "/planmode": "Activate Plan Mode with a PRD: /planmode <your requirements>",
     "/export last": "Export the last response to a Markdown file",
     "/image": "Queue an image for the next prompt",
@@ -485,187 +487,89 @@ class SettingsScreen(ModalScreen[dict[str, str] | None]):
         thought_select.value = current if current in levels else "enabled"
 
 
-class ContextMenuOption(Option):
-    """A context-menu entry: ``id`` carries the action identifier."""
-
-    def __init__(self, label: str, action_id: str | None, *, disabled: bool = False) -> None:
-        super().__init__(label, id=action_id, disabled=disabled)
-
 
 class SelectableStatic(Static):
-    """A ``Static`` whose raw text is exposed to Textual selection.
+    """A ``Static`` whose text is exposed to Textual selection.
 
     Textual's default ``Widget.get_selection`` only returns text when the
     rendered content is a ``Text`` or ``Content`` object. When the content is
     a Rich renderable such as ``Markdown``, ``get_selection`` returns ``None``,
     which makes agent responses invisible to ``Ctrl+Shift+C`` and the
-    Copy-selection menu entry. This subclass stores the raw markdown source
-    alongside the rendered Rich object and returns the raw text when the
-    widget is selected.
+    Copy-selection menu entry.
+
+    This subclass captures both:
+    * ``_selectable_plain_text`` — the *rendered* plain text (markdown syntax
+      stripped, lists/wrapping applied). Used for selection so users get what
+      they see, not raw ``**bold**`` markers.
+    * ``_selectable_raw_text`` — the raw markdown source. Returned only when
+      the plain rendering is unavailable.
     """
 
     def __init__(self, *args: Any, raw_text: str = "", **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._selectable_raw_text = raw_text
+        self._selectable_plain_text = self._markdown_to_plain(raw_text)
+
+    @staticmethod
+    def _markdown_to_plain(text: str) -> str:
+        """Render a markdown string to plain display text (no ANSI codes)."""
+        if not text:
+            return ""
+        try:
+            import io
+
+            from rich.console import Console
+            from rich.markdown import Markdown
+
+            buf = io.StringIO()
+            console = Console(
+                file=buf,
+                width=200,
+                no_color=True,
+                color_system=None,
+                highlight=False,
+                markup=False,
+                soft_wrap=False,
+            )
+            console.print(Markdown(text))
+            # Rich pads each line to the console width; strip per-line
+            # trailing whitespace and collapse to single newlines.
+            rendered = buf.getvalue()
+            return "\n".join(line.rstrip() for line in rendered.splitlines()).rstrip("\n")
+        except Exception:
+            return text
 
     def update(self, renderable: Any = None, *, raw_text: str | None = None) -> None:  # type: ignore[override]
-        """Render ``renderable`` while also remembering its raw markdown source."""
+        """Render ``renderable`` while remembering both source and plain text."""
         if raw_text is not None:
             self._selectable_raw_text = raw_text
+            self._selectable_plain_text = self._markdown_to_plain(raw_text)
         elif isinstance(renderable, str):
             self._selectable_raw_text = renderable
+            self._selectable_plain_text = self._markdown_to_plain(renderable)
         super().update(renderable)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Return the raw markdown source when this widget is selected."""
+        """Return text for selection, preferring the rendered plain text."""
         # Defer to the default behaviour for plain Text/Content renderables
         # (covers user messages, system messages, file-browser entries, etc.).
+        # Only trust the default if it actually returns content; for a Static
+        # whose current renderable is a RichMarkdown, ``_render()`` returns
+        # something that is not Text/Content and the default yields ``""``.
         default = super().get_selection(selection)
-        if default is not None:
+        if default is not None and default[0]:
             return default
-        if not self._selectable_raw_text:
+        text = self._selectable_plain_text or self._selectable_raw_text
+        if not text:
             return None
-        # For full-widget selections (Ctrl+A / Select all output) and any
-        # partial selection on a non-Text renderable, expose the raw source.
-        text = self._selectable_raw_text
-        if selection.start is not None and selection.end is not None:
-            start_off = (selection.start.y * 1_000_000) + selection.start.x
-            end_off = (selection.end.y * 1_000_000) + selection.end.x
-            lo, hi = sorted((start_off, end_off))
-            return text[lo:hi], "\n"
+        # SELECT_ALL (start/end None) returns the whole message. For partial
+        # selections on a non-Text renderable, the offsets are screen-cell
+        # coordinates that do not map cleanly to source characters — so we
+        # also return the whole message. This is predictable and avoids
+        # returning garbage slices like `` **world**``.
         return text, "\n"
 
 
-class ContextMenuScreen(ModalScreen[str | None]):
-    """Codex-style right-click dropdown menu.
-
-    A keyboard-navigable popup that surfaces Copy / Cut / Paste / Select All
-    and the response-copy commands. Opens on Ctrl+Right Click (primary,
-    matching Codex), Shift+Right Click (terminal-friendly fallback), or
-    Ctrl+M (keybinding fallback). The chosen action id is returned via
-    :py:meth:`dismiss`.
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss_menu", show=False),
-        Binding("up", "cursor_up", show=False),
-        Binding("down", "cursor_down", show=False),
-        Binding("home", "cursor_top", show=False),
-        Binding("end", "cursor_bottom", show=False),
-        Binding("enter", "select_current", show=False),
-    ]
-
-    CSS = """
-    ContextMenuScreen { align: center middle; }
-    #ctx-menu {
-        width: 46; max-height: 70%; border: round #36a3f7;
-        background: #0e1620; padding: 0;
-    }
-    #ctx-title {
-        padding: 0 1; background: #1a2838; color: #d9e7f5;
-        text-style: bold;
-    }
-    #ctx-list { padding: 0; scrollbar-size: 0 0; }
-    #ctx-list > .option-list--option { padding: 0 1; }
-    #ctx-hint {
-        padding: 0 1; background: #111a24; color: #7f96ab;
-    }
-    """
-
-    def __init__(self, options: list[tuple[str, str | None]]) -> None:
-        super().__init__()
-        self._options = options  # (label, action_id); None id => separator/dismiss
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="ctx-menu"):
-            yield Static("Context menu", id="ctx-title", markup=False)
-            yield OptionList(
-                *[
-                    ContextMenuOption(label, action_id, disabled=(action_id is None))
-                    for label, action_id in self._options
-                ],
-                id="ctx-list",
-            )
-            yield Static(
-                "↑↓ move  ·  Enter run  ·  Esc close",
-                id="ctx-hint",
-                markup=False,
-            )
-
-    def on_mount(self) -> None:
-        # Children mount asynchronously; defer highlight to the next refresh
-        # so ``query_one("#ctx-list")`` resolves after compose().
-        self.call_after_refresh(self._highlight_first_runnable)
-
-    def _highlight_first_runnable(self) -> None:
-        try:
-            option_list = self.query_one("#ctx-list", OptionList)
-        except Exception:
-            return
-        for index, (_, action_id) in enumerate(self._options):
-            if action_id is not None:
-                option_list.highlighted = index
-                return
-
-    def action_cursor_up(self) -> None:
-        option_list = self.query_one("#ctx-list", OptionList)
-        index = option_list.highlighted
-        if index is None:
-            index = 0
-        else:
-            index = max(0, index - 1)
-        # Skip separator rows.
-        while index > 0 and self._options[index][1] is None:
-            index -= 1
-        option_list.highlighted = index
-
-    def action_cursor_down(self) -> None:
-        option_list = self.query_one("#ctx-list", OptionList)
-        index = option_list.highlighted
-        if index is None:
-            index = 0
-        else:
-            index = min(len(self._options) - 1, index + 1)
-        # Skip separator rows.
-        while index < len(self._options) - 1 and self._options[index][1] is None:
-            index += 1
-        option_list.highlighted = index
-
-    def action_cursor_top(self) -> None:
-        for index, (_, action_id) in enumerate(self._options):
-            if action_id is not None:
-                self.query_one("#ctx-list", OptionList).highlighted = index
-                return
-
-    def action_cursor_bottom(self) -> None:
-        for index in range(len(self._options) - 1, -1, -1):
-            if self._options[index][1] is not None:
-                self.query_one("#ctx-list", OptionList).highlighted = index
-                return
-
-    def action_select_current(self) -> None:
-        option_list = self.query_one("#ctx-list", OptionList)
-        index = option_list.highlighted
-        if index is None:
-            self.dismiss(None)
-            return
-        action_id = self._options[index][1]
-        self.dismiss(action_id)
-
-    @on(OptionList.OptionSelected, "#ctx-list")
-    def option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Forward Enter / double-click selection to the action dispatcher."""
-        event.stop()
-        option_list = self.query_one("#ctx-list", OptionList)
-        index = option_list.highlighted
-        if index is None:
-            self.dismiss(None)
-            return
-        action_id = self._options[index][1]
-        self.dismiss(action_id)
-
-    def action_dismiss_menu(self) -> None:
-        self.dismiss(None)
 
 
 class TuiClient:
@@ -723,6 +627,10 @@ class NativeGlmTui(App[int]):
     SUB_TITLE = "Full harness terminal"
     ENABLE_COMMAND_PALETTE = False
     SHUTDOWN_TIMEOUT_SECONDS = 3.0
+    # Make Textual's in-app text selection highly visible so users can see
+    # what they are highlighting with click-drag (the default muted-purple
+    # background is too subtle on dark themes).
+    selection_style = Style(color="#ffffff", bgcolor="#1e4a82", bold=True)
     BINDINGS = [
         Binding("ctrl+x", "quit_agent", "Quit", priority=True),
         Binding("f10", "quit_agent", "Quit", show=False, priority=True),
@@ -738,11 +646,11 @@ class NativeGlmTui(App[int]):
         Binding("f5", "toggle_voice", "Push to talk", priority=True),
         Binding("ctrl+y", "copy_last_response", "Copy response", priority=True),
         Binding("ctrl+shift+c", "copy_selection", "Copy selection", show=False, priority=True),
-        # Codex-style right-click context menu.
-        # Ctrl+Right Click is the primary trigger; F6 is the keyboard
-        # fallback for terminals that bind Ctrl+Click at the OS level
-        # (Ctrl+M is the same byte as Enter in terminals and would submit).
-        Binding("f6", "open_context_menu", "Context menu", show=False, priority=True),
+        # Native mouse mode toggle. When ON, Textual releases mouse capture
+        # back to the terminal emulator so the user's native right-click
+        # context menu and click-drag selection work (Codex/Claude-Code
+        # approach). When OFF (default), Textual handles all mouse events.
+        Binding("f7", "toggle_native_mouse", "Native mouse", show=False, priority=True),
     ]
 
     CSS = """
@@ -858,6 +766,10 @@ class NativeGlmTui(App[int]):
         self._activity_active = False
         self._activity_started = time.monotonic()
         self._activity_hold_until: float | None = None
+        # Native mouse mode: when True, Textual has released mouse capture
+        # back to the terminal emulator so the terminal's own right-click
+        # context menu and click-drag text selection work natively.
+        self._native_mouse_mode = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -916,6 +828,17 @@ class NativeGlmTui(App[int]):
         self._set_activity("Starting session", active=True)
         self.agent.on_connect(self.client)
         self.initialize_agent()
+        # Honor GLM_ACP_NATIVE_MOUSE=1: start with mouse capture released
+        # so the terminal emulator handles right-click + selection natively
+        # (Codex/Claude-Code style). The driver is not yet available during
+        # __init__, so the toggle is deferred to the next refresh.
+        if os.environ.get("GLM_ACP_NATIVE_MOUSE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            self.call_after_refresh(self.action_toggle_native_mouse)
 
     @work(exclusive=True, group="agent-initialize")
     async def initialize_agent(self) -> None:
@@ -1022,6 +945,13 @@ class NativeGlmTui(App[int]):
             return True
         if text == "/settings":
             self.action_settings()
+            return True
+        if text == "/native-mouse":
+            # Codex/Claude-Code approach: get out of the terminal's way.
+            # Toggle whether Textual captures mouse events. When disabled,
+            # the terminal emulator handles right-click (native context
+            # menu) and click-drag (native selection → OS clipboard).
+            self.action_toggle_native_mouse()
             return True
         if text == "/clear-view":
             await self.action_clear_transcript()
@@ -1996,146 +1926,64 @@ class NativeGlmTui(App[int]):
             self.notify("Clipboard unavailable", severity="warning")
 
     # ------------------------------------------------------------------
-    # Codex-style right-click context menu (Ctrl+Right Click / Shift+Right
-    # Click / Ctrl+M keyboard fallback). Provides Copy / Cut / Paste /
-    # Select All for the composer and Copy selection / Copy last response /
-    # Copy all responses / Select all output for the transcript area.
+    # Native mouse mode toggle (F7 / /native-mouse / GLM_ACP_NATIVE_MOUSE=1)
+    #
+    # When a Textual app starts it sends ``\x1b[?1000h`` (and friends) to
+    # enable X11 / SGR mouse reporting. The terminal emulator then routes
+    # all mouse events to the app and stops handling native left-click
+    # selection and right-click context menus. This is why copy/paste via
+    # the terminal's own menu breaks whenever the TUI is running.
+    #
+    # The fix is NOT to draw our own dropdown menu — the terminal emulator
+    # already knows how to copy/paste natively. The fix is to give mouse
+    # control back to the terminal on demand. Textual's driver exposes
+    # ``_disable_mouse_support()`` / ``_enable_mouse_support()`` which write
+    # the proper enable/disable escape sequences (1000, 1003, 1015, 1006).
     # ------------------------------------------------------------------
 
-    def on_click(self, event: events.Click) -> None:
-        """Pop a Codex-style dropdown menu on Ctrl+Right Click or Shift+Right Click.
+    def action_toggle_native_mouse(self) -> None:
+        """Toggle between Textual mouse capture and native terminal mouse.
 
-        ``button == 2`` is the right mouse button in Textual's SGR encoding.
-        Many Linux terminals bind Ctrl+Click to native actions (open link,
-        terminal menu) that swallow the event before Textual receives it,
-        so Shift+Right Click is accepted as a terminal-friendly fallback
-        and F6 is exposed as a pure-keyboard alternative.
+        When **native mouse mode** is ON, the terminal emulator handles
+        right-click (its own context menu) and click-drag (native text
+        selection that copies to the OS clipboard). TUI mouse features
+        (clickable widgets, mouse-wheel scrolling inside the transcript)
+        are disabled until the user toggles back. This is the
+        Codex/Claude-Code approach: get out of the terminal's way and let
+        the user's existing terminal muscle memory work.
         """
-        if event.button != 2:
-            return
-        if not (event.ctrl or event.shift):
-            return
-        event.stop()
-        event.prevent_default()
-        # event.widget is the widget under the cursor (set by Textual during
-        # event dispatch). When it is the composer (or a descendant), offer
-        # Cut/Copy/Paste/Select All; otherwise offer the transcript-context
-        # Copy selection / Copy last response / Copy all / Select all output.
-        self._open_context_menu(clicked_widget=event.widget)
-
-    def action_open_context_menu(self) -> None:
-        """F6: keyboard fallback to open the right-click context menu."""
-        self._open_context_menu(clicked_widget=None)
-
-    def _open_context_menu(self, clicked_widget: Any = None) -> None:
-        composer = self.query_one("#composer", CommandInput)
-        if clicked_widget is not None:
-            composer_clicked = (
-                clicked_widget is composer or composer in clicked_widget.ancestors_with_self
+        driver = getattr(self, "_driver", None)
+        if driver is None or not hasattr(driver, "_disable_mouse_support"):
+            self.notify(
+                "Mouse toggle unavailable in this driver",
+                severity="warning",
             )
-        else:
-            # Keyboard (F6) path: fall back to the currently focused widget.
-            composer_clicked = self.focused is composer
-        if composer_clicked:
-            options: list[tuple[str, str | None]] = [
-                ("✂   Cut", "cut_composer"),
-                ("⧉   Copy", "copy_composer"),
-                ("⎘   Paste from clipboard", "paste"),
-                ("▭   Select all", "select_all_composer"),
-                ("────────────────────────────", None),
-                ("⧉   Copy last response", "copy_last"),
-                ("⧉   Copy all responses", "copy_all"),
-                ("────────────────────────────", None),
-                ("✕   Close menu", None),
-            ]
-        else:
-            options = [
-                ("⧉   Copy selection", "copy_selection"),
-                ("▭   Select all output", "select_all_output"),
-                ("⧉   Copy last response", "copy_last"),
-                ("⧉   Copy all responses", "copy_all"),
-                ("⎘   Paste to composer", "paste"),
-                ("────────────────────────────", None),
-                ("✕   Close menu", None),
-            ]
-        self.push_screen(ContextMenuScreen(options), self._context_menu_callback)
-
-    def _context_menu_callback(self, action: str | None) -> None:
-        if action is None:
             return
-        sync_handlers: dict[str, Callable[[], Any]] = {
-            "select_all_output": self.action_select_all_output,
-            "paste": self.action_paste_to_composer,
-            "cut_composer": self.action_cut_composer,
-            "copy_composer": self.action_copy_composer,
-            "select_all_composer": self.action_select_all_composer,
-        }
-        async_handlers: dict[str, Callable[[], Awaitable[Any]]] = {
-            "copy_selection": self.action_copy_selection,
-            "copy_last": self.action_copy_last_response,
-            "copy_all": self._copy_all_responses,
-        }
-        if action in async_handlers:
-            self.run_worker(async_handlers[action](), exclusive=True, group="ctx-menu")
-        elif action in sync_handlers:
-            sync_handlers[action]()
-
-    def action_select_all_output(self) -> None:
-        """Highlight all text in the transcript for a subsequent Copy."""
+        self._native_mouse_mode = not self._native_mouse_mode
         try:
-            self.screen.text_select_all()
-        except Exception:
-            self.notify("Selection is unavailable in this terminal", severity="warning")
-            return
-        self.notify(
-            "Selected all output — press Ctrl+Shift+C or open the menu again to copy",
-            severity="information",
-        )
-
-    def action_paste_to_composer(self) -> None:
-        """Paste the OS clipboard into the composer (used by the context menu)."""
-        composer = self.query_one("#composer", CommandInput)
-        composer.focus()
-        text = _read_system_clipboard() or self.app.clipboard
-        if not text:
-            self.notify("Clipboard is empty or unavailable", severity="warning")
-            return
-        composer._apply_clipboard_text(text)
-        self.notify(f"Pasted {len(text)} characters", severity="success")
-
-    def action_cut_composer(self) -> None:
-        """Cut the composer selection to the OS clipboard."""
-        composer = self.query_one("#composer", CommandInput)
-        composer.focus()
-        selected = composer.selected_text
-        if not selected:
-            self.notify("No text selected in composer", severity="information")
-            return
-        if not _write_system_clipboard(selected):
-            self.notify("Clipboard unavailable (install xclip or xsel)", severity="warning")
-            return
-        composer.delete_selection()
-        self.notify(f"Cut {len(selected)} characters", severity="success")
-
-    def action_copy_composer(self) -> None:
-        """Copy the composer selection (or whole line if none) to the clipboard."""
-        composer = self.query_one("#composer", CommandInput)
-        composer.focus()
-        selected = composer.selected_text or composer.value
-        if not selected:
-            self.notify("Nothing to copy", severity="information")
-            return
-        if _write_system_clipboard(selected):
-            self.notify(f"Copied {len(selected)} characters", severity="success")
-        else:
-            self.notify("Clipboard unavailable (install xclip or xsel)", severity="warning")
-
-    def action_select_all_composer(self) -> None:
-        """Select all text in the composer."""
-        composer = self.query_one("#composer", CommandInput)
-        composer.focus()
-        composer.select_all()
-        self.notify("Selected all text in composer", severity="information")
+            if self._native_mouse_mode:
+                driver._disable_mouse_support()
+                self.notify(
+                    "Native mouse ON — terminal handles right-click + selection.\n"
+                    "Hold Shift+drag for native select while in TUI mode.\n"
+                    "Press F7 or /native-mouse to restore TUI mouse.",
+                    title="Native mouse mode",
+                    severity="information",
+                    timeout=12,
+                )
+            else:
+                driver._enable_mouse_support()
+                self.notify(
+                    "TUI mouse restored — Textual handles clicks again.",
+                    severity="success",
+                    timeout=4,
+                )
+        except Exception as error:  # pragma: no cover - defensive
+            self._native_mouse_mode = not self._native_mouse_mode
+            self.notify(
+                f"Could not toggle mouse mode: {error}",
+                severity="error",
+            )
 
     async def _export_last_response(self) -> None:
         """Export the last agent response to a timestamped Markdown file."""
