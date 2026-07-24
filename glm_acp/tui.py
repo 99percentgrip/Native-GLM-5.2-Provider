@@ -553,6 +553,7 @@ class NativeGlmTui(App[int]):
         Binding("f4", "toggle_working_tree", "Working tree", priority=True),
         Binding("f5", "toggle_voice", "Push to talk", priority=True),
         Binding("ctrl+y", "copy_last_response", "Copy response", priority=True),
+        Binding("ctrl+shift+c", "copy_selection", "Copy selection", show=False, priority=True),
     ]
 
     CSS = """
@@ -1735,6 +1736,25 @@ class NativeGlmTui(App[int]):
     async def action_copy_last_response(self) -> None:
         """Ctrl+Y: copy the last agent response to the system clipboard."""
         await self._copy_response(None)
+
+    async def action_copy_selection(self) -> None:
+        """Ctrl+Shift+C: copy the currently selected text to the clipboard."""
+        try:
+            text = self.screen.get_selected_text()
+        except Exception:
+            text = ""
+        if text:
+            if _write_system_clipboard(text):
+                self.notify(
+                    f"Copied {len(text)} characters to clipboard", severity="success"
+                )
+            else:
+                self.notify("Clipboard unavailable (install xclip or xsel)", severity="warning")
+        else:
+            self.notify(
+                "No text selected — click and drag to select, then Ctrl+Shift+C",
+                severity="information",
+            )
 
     async def _copy_response(self, index: int | None) -> None:
         """Copy a specific agent response to the clipboard.
